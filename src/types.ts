@@ -40,4 +40,5 @@ export interface UserProfile {
     credits: number;
     stripeCustomerId?: string;
     promo?: string;
+    displayName?: string;
 }

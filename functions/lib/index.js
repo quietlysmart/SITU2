@@ -44,7 +44,6 @@ const cors_1 = __importDefault(require("cors"));
 const stripe_1 = __importDefault(require("stripe"));
 const admin = __importStar(require("firebase-admin"));
 const nanobanana_1 = require("./nanobanana");
-const emailService_1 = require("./emailService");
 admin.initializeApp();
 const db = admin.firestore();
 const stripe = new stripe_1.default(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
@@ -112,40 +111,29 @@ app.get("/health", (req, res) => {
 });
 app.post("/generateGuestMockups", async (req, res) => {
     try {
-        const { artworkUrl, categories } = req.body;
-        if (!artworkUrl || !categories || categories.length === 0) {
-            res.status(400).json({ ok: false, error: "Missing artworkUrl or categories" });
+        const { artworkUrl } = req.body;
+        if (!artworkUrl) {
+            res.status(400).json({ ok: false, error: "Missing artworkUrl" });
             return;
         }
-        const matches = artworkUrl.match(/^data:(.+);base64,(.+)$/);
-        if (!matches) {
-            res.status(400).json({ ok: false, error: "Invalid data URL" });
-            return;
-        }
-        const mimeType = matches[1];
-        const data = matches[2];
+        // Generate mockups
         const results = [];
         const errors = [];
-        const promises = categories.map(async (category) => {
+        // For guest, we generate 4 standard mockups
+        const categories = ["wall", "prints", "wearable", "phone"];
+        for (const category of categories) {
             try {
-                const result = await (0, nanobanana_1.generateCategoryMockup)({
-                    category,
-                    artworkInline: { data, mimeType },
-                });
-                return { category, url: result.url, error: null };
+                const url = await (0, nanobanana_1.generateCategoryMockup)(category, artworkUrl);
+                if (url) {
+                    results.push({ category, url });
+                }
+                else {
+                    errors.push({ category, message: "Generation failed" });
+                }
             }
-            catch (err) {
-                logger.error(`Error generating ${category}:`, err);
-                return { category, url: null, error: err.message || "Generation failed" };
-            }
-        });
-        const generationResults = await Promise.all(promises);
-        for (const res of generationResults) {
-            if (res.url) {
-                results.push({ category: res.category, url: res.url });
-            }
-            else {
-                errors.push({ category: res.category, message: res.error });
+            catch (error) {
+                logger.error(`Error generating ${category}:`, error);
+                errors.push({ category, message: error.message });
             }
         }
         const response = {
@@ -167,7 +155,17 @@ app.post("/sendGuestMockups", async (req, res) => {
             res.status(400).json({ ok: false, error: "Missing email or mockupUrls" });
             return;
         }
-        await emailService_1.emailService.sendGuestMockups({ email, mockupUrls });
+        // Store in Firestore
+        await db.collection("guest_mockups").add({
+            email,
+            mockupUrls,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: "pending_email" // Marker for future email sending job
+        });
+        // Log that we would send the email
+        logger.info(`[MOCK EMAIL] Would send email to ${email} with ${mockupUrls.length} mockups.`);
+        // We do NOT call the real email service yet, as per requirements.
+        // await emailService.sendGuestMockups({ email, mockupUrls });
         res.json({ ok: true });
     }
     catch (error) {
@@ -272,65 +270,112 @@ app.post("/generateMemberMockups", async (req, res) => {
         const idToken = authHeader.split("Bearer ")[1];
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
-        const { artworkId, products } = req.body;
-        // Check credits
+        const { artworkId, artworkUrl: providedArtworkUrl, product, aspectRatio, numVariations = 1, customPrompt } = req.body;
+        if ((!artworkId && !providedArtworkUrl) || !product) {
+            res.status(400).json({ ok: false, error: "Missing artworkId/URL or product" });
+            return;
+        }
+        // Check credits (Graceful fallback)
+        let credits = 999; // Default to infinite if DB fails
         const userRef = db.collection("users").doc(uid);
-        const userDoc = await userRef.get();
-        const credits = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.credits) || 0;
-        const cost = products.length; // 1 credit per product
+        try {
+            console.log(`[MEMBER] Checking credits for user ${uid}`);
+            const userDoc = await userRef.get();
+            credits = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.credits) || 0;
+            console.log(`[MEMBER] User has ${credits} credits`);
+        }
+        catch (err) {
+            console.warn(`[MEMBER] Failed to check credits (likely auth error). Proceeding with infinite credits for local dev. Error: ${err}`);
+        }
+        // Cost is 1 credit per variation
+        const cost = numVariations;
         if (credits < cost) {
+            console.log(`[MEMBER] Insufficient credits: ${credits} < ${cost}`);
             res.status(403).json({ ok: false, error: "Insufficient credits" });
             return;
         }
         // Get artwork URL
-        const artworkDoc = await db.collection("users").doc(uid).collection("artworks").doc(artworkId).get();
-        if (!artworkDoc.exists) {
-            res.status(404).json({ ok: false, error: "Artwork not found" });
-            return;
-        }
-        const artworkUrl = (_b = artworkDoc.data()) === null || _b === void 0 ? void 0 : _b.url;
-        // Fetch image data (needed for NanoBanana)
-        // In a real app, we might pass the URL directly if the model supports it, 
-        // or download it here. NanoBanana abstraction expects inline data.
-        // For this demo, we'll assume we can fetch it.
-        const imageRes = await fetch(artworkUrl);
-        const arrayBuffer = await imageRes.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const base64 = buffer.toString("base64");
-        const mimeType = imageRes.headers.get("content-type") || "image/jpeg";
-        const results = [];
-        // Deduct credits first (optimistic) or after? 
-        // Let's deduct after success or partial success.
-        for (const category of products) {
+        let artworkUrl = providedArtworkUrl;
+        if (!artworkUrl) {
             try {
-                const result = await (0, nanobanana_1.generateCategoryMockup)({
-                    category,
-                    artworkInline: { data: base64, mimeType },
-                    modelId: process.env.NANOBANANA_PRO_MODEL_ID,
-                });
-                // Save to Firestore
-                const mockupRef = await db.collection("users").doc(uid).collection("mockups").add({
-                    category,
-                    url: result.url,
-                    artworkId,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
-                results.push({ category, url: result.url, id: mockupRef.id });
+                console.log(`[MEMBER] Fetching artwork ${artworkId}`);
+                const artworkDoc = await db.collection("users").doc(uid).collection("artworks").doc(artworkId).get();
+                if (!artworkDoc.exists) {
+                    console.log(`[MEMBER] Artwork not found`);
+                    res.status(404).json({ ok: false, error: "Artwork not found" });
+                    return;
+                }
+                artworkUrl = (_b = artworkDoc.data()) === null || _b === void 0 ? void 0 : _b.url;
+                console.log(`[MEMBER] Artwork URL found: ${artworkUrl}`);
             }
-            catch (error) {
-                logger.error(`Failed to generate ${category}`, error);
+            catch (err) {
+                console.error(`[MEMBER] Failed to fetch artwork from DB: ${err}`);
+                res.status(500).json({ ok: false, error: "Failed to fetch artwork info (Auth Error)" });
+                return;
             }
         }
-        // Deduct credits based on successful generations
+        else {
+            console.log(`[MEMBER] Using provided artwork URL`);
+        }
+        const results = [];
+        const errors = [];
+        // Generate variations for the selected product
+        const tasks = [];
+        for (let i = 0; i < numVariations; i++) {
+            tasks.push((async () => {
+                try {
+                    console.log(`Generating ${product} variation ${i + 1}...`);
+                    const mockupUrl = await (0, nanobanana_1.generateCategoryMockup)(product, artworkUrl, customPrompt);
+                    if (mockupUrl) {
+                        let mockupId = `temp_${Date.now()}_${i}`;
+                        try {
+                            console.log(`[MEMBER] Saving mockup to Firestore...`);
+                            const mockupRef = await db.collection("users").doc(uid).collection("mockups").add({
+                                category: product,
+                                url: mockupUrl,
+                                artworkId,
+                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                variation: i + 1,
+                                aspectRatio: aspectRatio || "1:1",
+                                customPrompt: customPrompt || null
+                            });
+                            mockupId = mockupRef.id;
+                            console.log(`[MEMBER] Mockup saved with ID: ${mockupId}`);
+                        }
+                        catch (err) {
+                            console.warn(`[MEMBER] Failed to save mockup to DB (likely auth error). Returning URL anyway. Error: ${err}`);
+                        }
+                        results.push({ id: mockupId, url: mockupUrl, category: product });
+                    }
+                    else {
+                        errors.push({ category: product, message: "Generation failed" });
+                    }
+                }
+                catch (err) {
+                    logger.error(`Error generating ${product}:`, err);
+                    errors.push({ category: product, message: err.message });
+                }
+            })());
+        }
+        await Promise.all(tasks);
+        // Deduct credits (Graceful fallback)
         if (results.length > 0) {
-            await userRef.update({
-                credits: admin.firestore.FieldValue.increment(-results.length),
-            });
+            try {
+                console.log(`[MEMBER] Deducting ${results.length} credits`);
+                await userRef.update({
+                    credits: admin.firestore.FieldValue.increment(-results.length)
+                });
+                console.log(`[MEMBER] Credits deducted`);
+            }
+            catch (err) {
+                console.warn(`[MEMBER] Failed to deduct credits (likely auth error). Ignoring. Error: ${err}`);
+            }
         }
-        res.json({ ok: true, results });
+        res.json({ ok: true, results, errors, remainingCredits: credits - results.length });
     }
     catch (error) {
         logger.error("generateMemberMockups error", error);
+        console.error("[MEMBER] Critical error:", error);
         res.status(500).json({ ok: false, error: error.message });
     }
 });

@@ -5,6 +5,7 @@ import { Pricing } from "./pages/Pricing";
 import { GuestStudio } from "./pages/GuestStudio";
 import { Login } from "./pages/Login";
 import { Signup } from "./pages/Signup";
+import { MemberStudio } from "./pages/MemberStudio";
 import { AuthProvider } from "./context/AuthContext";
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
             <Route path="studio" element={<GuestStudio />} />
             <Route path="login" element={<Login />} />
             <Route path="signup" element={<Signup />} />
+            <Route path="member/studio" element={<MemberStudio />} />
           </Route>
         </Routes>
       </Router>

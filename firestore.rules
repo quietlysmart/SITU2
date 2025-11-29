@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      match /artworks/{artworkId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      
+      match /mockups/{mockupId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    
+    match /guest_mockups/{mockupId} {
+      allow create: if true; // Allow guests to create
+      allow read: if false; // Only admin can read (via backend)
+    }
+  }
+}

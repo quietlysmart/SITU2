@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import type { UserProfile } from "../types";
 
 export function Signup() {
+    const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
@@ -24,21 +25,45 @@ export function Signup() {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
 
-            // Create user profile
+            // Update Auth Profile
+            await updateProfile(user, { displayName: name });
+
+            // Create user profile in Firestore
             const profile: UserProfile = {
                 email: user.email!,
+                displayName: name,
                 createdAt: serverTimestamp(),
                 plan: "free",
-                credits: promo === "early-tester-20" ? 20 : 0,
-                promo: promo || undefined,
+                credits: 20, // Default to 20 credits for everyone
+                ...(promo ? { promo } : {}),
             };
 
-            await setDoc(doc(db, "users", user.uid), profile);
+            console.log("Creating Firestore profile for:", user.uid);
+
+            // Attempt to create profile with a timeout
+            const createProfilePromise = setDoc(doc(db, "users", user.uid), profile);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Profile creation timed out")), 5000));
+
+            try {
+                await Promise.race([createProfilePromise, timeoutPromise]);
+                console.log("Profile created successfully");
+            } catch (profileError) {
+                console.error("Profile creation failed or timed out:", profileError);
+                // We continue anyway because the Auth account is created. 
+                // The user can still use the app, and we can try to create the profile later or lazily.
+            }
 
             navigate("/member/studio");
         } catch (err: any) {
-            console.error("Signup error:", err);
-            setError(err.message);
+            console.error("Signup error details:", err);
+            // Check for specific Firestore errors
+            if (err.code === 'permission-denied') {
+                setError("Database permission denied. Please contact support.");
+            } else if (err.code === 'unavailable') {
+                setError("Database service unavailable. Please check your connection.");
+            } else {
+                setError(err.message || "Failed to create account. Please try again.");
+            }
         } finally {
             setLoading(false);
         }
@@ -53,6 +78,17 @@ export function Signup() {
                 </div>
             )}
             <form onSubmit={handleSignup} className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
+                    <input
+                        type="text"
+                        required
+                        className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Your Name"
+                    />
+                </div>
                 <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
                     <input

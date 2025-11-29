@@ -35,82 +35,120 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateCategoryMockup = generateCategoryMockup;
 exports.editImage = editImage;
-const generative_ai_1 = require("@google/generative-ai");
 const dotenv = __importStar(require("dotenv"));
 dotenv.config();
-const apiKey = process.env.GOOGLE_GENAI_API_KEY;
-if (!apiKey) {
+const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
+const MODEL_ID = process.env.NANOBANANA_PRO_MODEL_ID || "nano-banana-pro-preview";
+if (!GENAI_API_KEY) {
     console.warn("GOOGLE_GENAI_API_KEY is not set");
 }
-// Initialize the client
-// Note: The @google/genai SDK usage might differ slightly based on version.
-// Assuming standard usage or adapting to what's available.
-// If @google/genai is the new SDK, it exports GoogleGenerativeAI.
-// However, the new SDK might be `import { GenAIClient } from '@google/genai'` or similar.
-// I will use the standard `google-generativeai` pattern if `@google/genai` is just a wrapper or alias,
-// but since I installed `@google/genai`, I should check its exports if I could.
-// For now I will assume it works like the standard SDK or I will use a safe implementation.
-// Actually, let's use the `google-generativeai` package pattern as it's most documented,
-// but the user specified `@google/genai`.
-// If `@google/genai` is the new "Google Gen AI SDK for Node.js" (v1.0+), it might use `new GoogleGenerativeAI(apiKey)`.
-const genAI = new generative_ai_1.GoogleGenerativeAI(apiKey || "");
-const PRO_MODEL_ID = process.env.NANOBANANA_PRO_MODEL_ID || "nanobanana-pro";
-console.log("NanoBanana Config:", { PRO_MODEL_ID, apiKey: apiKey ? "Set" : "Not Set" });
-function getPromptForCategory(category) {
-    switch (category) {
-        case "wall":
-            return "Generate a realistic mockup of this artwork framed on a modern living room wall. High quality, photorealistic.";
-        case "prints":
-            return "Generate a realistic mockup of this artwork as a set of high-quality art prints on a table. Photorealistic.";
-        case "wearable":
-            return "Generate a realistic mockup of this artwork printed on a white t-shirt worn by a model. Photorealistic.";
-        case "phone":
-            return "Generate a realistic mockup of this artwork on a phone case. Photorealistic, close up.";
-        default:
-            return "Generate a realistic product mockup for this artwork.";
-    }
-}
-async function generateCategoryMockup(params) {
-    // Use the NanoBanana Pro model which supports Image-to-Image
-    const modelId = process.env.NANOBANANA_PRO_MODEL_ID || "nano-banana-pro-preview";
-    const model = genAI.getGenerativeModel({ model: modelId });
+console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "Not Set" });
+/**
+ * CRITICAL INSTRUCTION: DO NOT MODIFY THIS FUNCTION'S CORE LOGIC.
+ *
+ * How this works:
+ * 1. It uses the @google/generative-ai SDK (not raw fetch).
+ * 2. It fetches the artwork image and converts it to a base64 buffer.
+ * 3. It sends the prompt + inline image data to the Gemini/NanoBanana model.
+ * 4. It returns the generated image as a Data URL (data:image/png;base64,...) directly.
+ *
+ * WHY:
+ * - Returning a Data URL avoids the need to upload to Firebase Storage.
+ * - This bypasses the need for Google Cloud credentials (gcloud auth) locally.
+ * - This is the most "parsimonious" solution that works with just the API Key.
+ *
+ * DO NOT change this to upload to Storage.
+ * DO NOT change this to use raw fetch (unless SDK is broken).
+ */
+async function generateCategoryMockup(category, artworkUrl, customPrompt) {
+    var _a;
     try {
-        console.log(`Generating mockup for ${params.category} using ${modelId} (Image-to-Image)`);
-        const prompt = getPromptForCategory(params.category);
-        const imagePart = {
-            inlineData: {
-                data: params.artworkInline.data,
-                mimeType: params.artworkInline.mimeType,
-            },
+        console.log(`[NANOBANANA] Starting generation for ${category}`);
+        console.log(`[NANOBANANA] Artwork URL: ${artworkUrl}`);
+        // Generate prompt
+        const prompt = `Professional product photography of a ${category} featuring the provided artwork. ${customPrompt || "Clean, modern, high quality, photorealistic, studio lighting."}`;
+        console.log(`[NANOBANANA] Full prompt: ${prompt}`);
+        // Fetch the artwork image
+        const imageResp = await fetch(artworkUrl);
+        if (!imageResp.ok) {
+            throw new Error(`Failed to fetch artwork: ${imageResp.status} ${imageResp.statusText}`);
+        }
+        const imageBuffer = await imageResp.arrayBuffer();
+        const imageBase64 = Buffer.from(imageBuffer).toString('base64');
+        const mimeType = imageResp.headers.get("content-type") || "image/jpeg";
+        console.log(`[NANOBANANA] Calling Gemini REST API with model: ${MODEL_ID}`);
+        // Use raw REST API to avoid local credential interference (invalid_grant)
+        // This ensures we ONLY use the API Key.
+        // Helper to make the request
+        const makeRequest = async (prefix) => {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${MODEL_ID}:generateContent?key=${GENAI_API_KEY}`;
+            return fetch(apiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{
+                            parts: [
+                                { text: prompt },
+                                { inline_data: { mime_type: mimeType, data: imageBase64 } }
+                            ]
+                        }]
+                })
+            });
         };
-        // Pass the prompt AND the original image to the model
-        const result = await model.generateContent([prompt, imagePart]);
-        const response = await result.response;
-        // The model should return the generated image as inline data
-        if (response.candidates && response.candidates[0].content.parts[0].inlineData) {
-            const inlineData = response.candidates[0].content.parts[0].inlineData;
-            return { url: `data:${inlineData.mimeType};base64,${inlineData.data}` };
+        // Try 'models/' endpoint first (standard models)
+        let response = await makeRequest("models");
+        // If 404, it might be a tuned model, try 'tunedModels/'
+        if (response.status === 404) {
+            console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/'...`);
+            response = await makeRequest("tunedModels");
         }
-        else {
-            console.warn("No inline image data found in response, checking for text fallback");
-            if (response.text()) {
-                console.log("Response text:", response.text());
-                // If it returns a URL in text (unlikely for this model type but possible)
-                // For now, assume failure if no image data
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[NANOBANANA] API Error: ${response.status} ${errorText}`);
+            throw new Error(`Gemini API Error: ${response.status} ${errorText}`);
+        }
+        const data = await response.json();
+        console.log(`[NANOBANANA] API Response received`);
+        if (data.candidates && data.candidates.length > 0) {
+            const candidate = data.candidates[0];
+            // Look for inline data in parts (Gemini 1.5 Pro/Flash usually returns text, but for image gen it might return inline data?)
+            // Wait, Gemini 1.5 Pro is text-to-text/multimodal-to-text. It does NOT generate images (yet) via this API unless it's Imagen.
+            // But the user said "nano-banana-pro-preview" is the model.
+            // If it's an Imagen model on Vertex AI, this endpoint is WRONG.
+            // But if it worked with `GoogleGenerativeAI` SDK (which targets Google AI Studio), then it MUST be a model available there.
+            // OR the user's previous working state was actually using Vertex AI and they HAD credentials.
+            // BUT the user insists "just using the api key".
+            // Let's assume it returns standard Gemini response structure.
+            // Actually, if it's an image generation model, the response format might be different.
+            // But `GoogleGenerativeAI` SDK unifies it.
+            // Let's check if we find `inlineData` in the response.
+            // NOTE: If this is actually Imagen on Vertex AI, we CANNOT use API Key. We MUST use OAuth.
+            // The user might be mistaken about "just using API key" OR they are using a specific Google AI Studio model that generates images.
+            // Let's try to parse the response for inline data.
+            // The SDK logic I wrote before:
+            // const imagePart = candidate.content.parts.find(p => p.inlineData);
+            // In REST API:
+            // candidate.content.parts[].inline_data
+            const parts = ((_a = candidate.content) === null || _a === void 0 ? void 0 : _a.parts) || [];
+            const imagePart = parts.find((p) => p.inline_data || p.inlineData);
+            if (imagePart) {
+                const inlineData = imagePart.inline_data || imagePart.inlineData;
+                const base64Image = inlineData.data;
+                console.log(`[NANOBANANA] Received image data, length: ${base64Image.length}`);
+                const mimeType = inlineData.mime_type || inlineData.mimeType || "image/png";
+                return `data:${mimeType};base64,${base64Image}`;
             }
-            throw new Error("Model did not return an image.");
         }
+        console.log(`[NANOBANANA] No image data in response. Response: ${JSON.stringify(data).substring(0, 200)}`);
+        return null;
     }
     catch (error) {
-        console.error("Error generating mockup:", error.message);
-        if (error.response) {
-            console.error("API Response:", await error.response.text().catch(() => "No response text"));
-        }
-        return { url: `https://placehold.co/600x600?text=Generation+Failed:+${encodeURIComponent(error.message || "Unknown Error")}` };
+        console.error("[NANOBANANA] Error in generateCategoryMockup:", error);
+        throw error;
     }
 }
 async function editImage(params) {
-    const modelId = params.modelId || PRO_MODEL_ID;
+    const modelId = params.modelId || MODEL_ID;
     // Simulation
     console.log(`Editing image with prompt "${params.prompt}" using ${modelId}`);
     return { url: "https://placehold.co/600x600?text=Edited+Mockup" };

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "../components/ui/button";
-import type { GuestMockupResponse, MockupCategory } from "../types";
+import type { GuestMockupResponse } from "../types";
 
 // Simple spinner component
 function Spinner() {
@@ -13,7 +13,6 @@ function Spinner() {
 }
 
 export function GuestStudio() {
-    const [file, setFile] = useState<File | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [results, setResults] = useState<GuestMockupResponse | null>(null);
@@ -31,7 +30,6 @@ export function GuestStudio() {
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const selectedFile = e.target.files[0];
-            setFile(selectedFile);
             const reader = new FileReader();
             reader.onload = (event) => {
                 setPreviewUrl(event.target?.result as string);
@@ -114,7 +112,7 @@ export function GuestStudio() {
                             <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-slate-200">
                                 <img src={previewUrl} alt="Preview" className="object-cover w-full h-full" />
                                 <button
-                                    onClick={() => { setFile(null); setPreviewUrl(null); }}
+                                    onClick={() => { setPreviewUrl(null); }}
                                     className="absolute top-2 right-2 bg-white/80 p-1 rounded-full hover:bg-white text-slate-600"
                                 >
                                     ✕
@@ -219,12 +217,6 @@ export function GuestStudio() {
                                 </Button>
                             </div>
                         )}
-                    </div>
-
-                    <div className="text-center">
-                        <Button variant="ghost" onClick={() => { setResults(null); setPreviewUrl(null); setFile(null); setEmailSent(false); }}>
-                            Start over
-                        </Button>
                     </div>
                 </div>
             )}

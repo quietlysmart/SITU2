@@ -11,22 +11,19 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({ user: null, loading: true });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-    // Temporarily disabled Firebase auth to debug blank page issue
-    // const [user, setUser] = useState<User | null>(null);
-    // const [loading, setLoading] = useState(true);
+    const [user, setUser] = useState<User | null>(null);
+    const [loading, setLoading] = useState(true);
 
-    // useEffect(() => {
-    //     const unsubscribe = onAuthStateChanged(auth, (user) => {
-    //         setUser(user);
-    //         setLoading(false);
-    //     });
-    //     return unsubscribe;
-    // }, []);
-
-    console.log('AuthProvider rendering');
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+            setUser(user);
+            setLoading(false);
+        });
+        return unsubscribe;
+    }, []);
 
     return (
-        <AuthContext.Provider value={{ user: null, loading: false }}>
+        <AuthContext.Provider value={{ user, loading }}>
             {children}
         </AuthContext.Provider>
     );
