@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -28,7 +28,9 @@ let storage: any;
 try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+    // db = getFirestore(app);
+    // Use initializeFirestore to force long polling and avoid QUIC errors
+    db = initializeFirestore(app, { experimentalForceLongPolling: true });
     storage = getStorage(app);
     console.log("Firebase initialized successfully");
 } catch (error) {

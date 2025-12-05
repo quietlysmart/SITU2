@@ -12,13 +12,15 @@ export interface GuestMockupResult {
 
 export interface GuestMockupResponse {
     ok: boolean;
+    sessionId?: string;
     results: GuestMockupResult[];
     errors: { category: MockupCategory; message: string }[];
 }
 
 export interface SendGuestMockupsRequest {
     email: string;
-    mockupUrls: string[];
+    sessionId?: string;
+    mockupUrls?: string[]; // Kept for backward compat if needed, but sessionId is preferred
 }
 
 export interface MemberMockupRequest {

@@ -34,13 +34,39 @@ interface EditParams {
  * DO NOT change this to upload to Storage.
  * DO NOT change this to use raw fetch (unless SDK is broken).
  */
-export async function generateCategoryMockup(category: string, artworkUrl: string, customPrompt?: string): Promise<string | null> {
+export async function generateCategoryMockup(category: string, artworkUrl: string, customPrompt?: string, aspectRatio?: string): Promise<string | null> {
     try {
         console.log(`[NANOBANANA] Starting generation for ${category}`);
         console.log(`[NANOBANANA] Artwork URL: ${artworkUrl}`);
 
+        // Product Prompts Configuration
+        const PRODUCT_PROMPTS: Record<string, string> = {
+            "wall": "Ultra-realistic interior design photo of framed wall art in a stylish, modern room. Dramatic natural lighting casting soft shadows. The provided artwork is the focal point, framed elegantly on the wall. High-end furniture and decor in the background, cinematic composition.",
+            "prints": "High-end lifestyle photography of art prints arranged on a desk or table. Overhead or slight three-quarter view. Multiple prints clearly on paper, maybe a few overlapping, plus a few small props (pens, clips, etc.). Still ultra-realistic, nice shallow depth of field. Soft, warm lighting. The provided artwork is the main focus.",
+            "wearable": "Ultra-realistic fashion photography of a real person wearing the provided artwork as apparel. The item could be a t-shirt, hoodie, dress, hat, or accessory as appropriate. The model is in a natural, lifestyle setting (e.g., street, cafe, or studio) with dramatic lighting. The artwork is clearly visible on the fabric. High-end fashion editorial style.",
+            "phone": "Ultra-realistic lifestyle shot of a smartphone with a custom case featuring the provided artwork. Held by a hand or resting on a textured surface (wood, marble). Shallow depth of field, focusing on the case design. Modern and sleek.",
+            "mug": "Cozy lifestyle photography of a ceramic mug featuring the provided artwork. Placed on a wooden table with coffee beans, a book, or a laptop nearby. Warm, inviting lighting with steam rising. Realistic ceramic texture and reflections.",
+            "tote": "Street-style photography of a person carrying a canvas tote bag with the provided artwork. Natural outdoor lighting or trendy indoor setting. The bag is the focus, showing realistic fabric texture and weight. Casual and stylish.",
+            "pillow": "Interior design shot of a decorative throw pillow on a plush sofa. The provided artwork is printed on the fabric. Cozy, inviting atmosphere with soft lighting and complementary decor. High-quality textile rendering.",
+            "notebook": "Creative workspace photography of a notebook with the provided artwork on the cover. Surrounded by artist tools, pens, or a laptop. Top-down or angled view with good lighting to show the cover texture. Inspiring and organized."
+        };
+
+        // Aspect Ratio Prompt Addition
+        let ratioPrompt = "";
+        if (aspectRatio) {
+            switch (aspectRatio) {
+                case "1:1": ratioPrompt = "Square aspect ratio."; break;
+                case "16:9": ratioPrompt = "Wide landscape 16:9 aspect ratio."; break;
+                case "9:16": ratioPrompt = "Tall portrait 9:16 aspect ratio."; break;
+                case "4:3": ratioPrompt = "Standard landscape 4:3 aspect ratio."; break;
+                case "3:4": ratioPrompt = "Standard portrait 3:4 aspect ratio."; break;
+                default: ratioPrompt = "";
+            }
+        }
+
         // Generate prompt
-        const prompt = `Professional product photography of a ${category} featuring the provided artwork. ${customPrompt || "Clean, modern, high quality, photorealistic, studio lighting."}`;
+        const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork. Clean, modern, high quality, photorealistic, studio lighting.`;
+        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "IMPORTANT: " + customPrompt : ""}`.trim();
         console.log(`[NANOBANANA] Full prompt: ${prompt}`);
 
         // Fetch the artwork image

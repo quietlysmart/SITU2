@@ -9,10 +9,9 @@ export function Home() {
 
     const handleGetStarted = () => {
         if (!user) {
-            navigate("/signup");
+            navigate("/guest");
         } else {
-            // User is logged in, could redirect to checkout or studio
-            navigate("/studio");
+            navigate("/member/studio");
         }
     };
 
@@ -38,11 +37,13 @@ export function Home() {
                         Upload your artwork and instantly generate realistic mockups on walls, prints, apparel, and more. No complex software required.
                     </p>
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                        <Link to="/studio">
-                            <Button size="lg" className="w-full sm:w-auto text-base px-8 bg-white text-slate-900 hover:bg-slate-100">
-                                Start with your artwork
-                            </Button>
-                        </Link>
+                        <Button
+                            size="lg"
+                            className="w-full sm:w-auto text-base px-8 bg-white text-slate-900 hover:bg-slate-100"
+                            onClick={handleGetStarted}
+                        >
+                            Start with your artwork
+                        </Button>
                     </div>
                 </div>
             </section>

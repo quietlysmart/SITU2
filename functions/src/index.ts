@@ -4,10 +4,14 @@ import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { generateCategoryMockup, editImage } from "./nanobanana";
 import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
 
-admin.initializeApp();
+admin.initializeApp({
+    projectId: "situ-477910",
+    storageBucket: "situ-477910.firebasestorage.app"
+});
 const db = admin.firestore();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
@@ -65,12 +69,12 @@ app.post("/editMockup", async (req, res) => {
         // Update Firestore
         await mockupRef.update({
             url: result.url,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
         });
 
         // Deduct credit
         await userRef.update({
-            credits: admin.firestore.FieldValue.increment(-1),
+            credits: FieldValue.increment(-1),
         });
 
         res.json({ ok: true, url: result.url });
@@ -113,8 +117,21 @@ app.post("/generateGuestMockups", async (req, res) => {
             }
         }
 
+        // Store guest session
+        let sessionId: string | undefined;
+        if (results.length > 0) {
+            const sessionRef = await db.collection("guest_sessions").add({
+                results,
+                createdAt: FieldValue.serverTimestamp(),
+                status: "generated",
+                artworkUrl // optionally store the input artwork URL
+            });
+            sessionId = sessionRef.id;
+        }
+
         const response: GuestMockupResponse = {
             ok: true,
+            sessionId,
             results,
             errors,
         };
@@ -130,26 +147,39 @@ app.post("/generateGuestMockups", async (req, res) => {
 
 app.post("/sendGuestMockups", async (req, res) => {
     try {
-        const { email, mockupUrls } = req.body as SendGuestMockupsRequest;
+        const { email, mockupUrls, sessionId } = req.body as SendGuestMockupsRequest;
 
-        if (!email || !mockupUrls || mockupUrls.length === 0) {
-            res.status(400).json({ ok: false, error: "Missing email or mockupUrls" });
+        if (!email) {
+            res.status(400).json({ ok: false, error: "Missing email" });
             return;
         }
 
-        // Store in Firestore
-        await db.collection("guest_mockups").add({
-            email,
-            mockupUrls,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            status: "pending_email" // Marker for future email sending job
-        });
+        if (sessionId) {
+            // Upstream preferred way: update the existing session
+            await db.collection("guest_sessions").doc(sessionId).update({
+                email,
+                status: "pending_email",
+                emailRequestsAt: FieldValue.serverTimestamp()
+            });
+            // Also log for debugging
+            const sessionDoc = await db.collection("guest_sessions").doc(sessionId).get();
+            const sessionData = sessionDoc.data();
+            const urls = sessionData?.results?.map((r: any) => r.url) || [];
+            logger.info(`[MOCK EMAIL] Would send email to ${email} with ${urls.length} mockups (session ${sessionId}).`);
 
-        // Log that we would send the email
-        logger.info(`[MOCK EMAIL] Would send email to ${email} with ${mockupUrls.length} mockups.`);
-
-        // We do NOT call the real email service yet, as per requirements.
-        // await emailService.sendGuestMockups({ email, mockupUrls });
+        } else if (mockupUrls && mockupUrls.length > 0) {
+            // Legacy way (or fallback)
+            await db.collection("guest_mockups").add({
+                email,
+                mockupUrls,
+                createdAt: FieldValue.serverTimestamp(),
+                status: "pending_email"
+            });
+            logger.info(`[MOCK EMAIL] Would send email to ${email} with ${mockupUrls.length} mockups (legacy).`);
+        } else {
+            res.status(400).json({ ok: false, error: "Missing sessionId or mockupUrls" });
+            return;
+        }
 
         res.json({ ok: true });
     } catch (error: any) {
@@ -241,7 +271,7 @@ app.post("/stripeWebhook", express.raw({ type: "application/json" }), async (req
 
                 await userDoc.ref.update({
                     plan,
-                    credits: admin.firestore.FieldValue.increment(creditsToAdd),
+                    credits: FieldValue.increment(creditsToAdd),
                 });
             }
         }
@@ -273,9 +303,9 @@ app.post("/generateMemberMockups", async (req, res) => {
             return;
         }
 
-        // Check credits (Graceful fallback)
-        let credits = 999; // Default to infinite if DB fails
+        // Check credits
         const userRef = db.collection("users").doc(uid);
+        let credits = 0;
 
         try {
             console.log(`[MEMBER] Checking credits for user ${uid}`);
@@ -283,7 +313,9 @@ app.post("/generateMemberMockups", async (req, res) => {
             credits = userDoc.data()?.credits || 0;
             console.log(`[MEMBER] User has ${credits} credits`);
         } catch (err) {
-            console.warn(`[MEMBER] Failed to check credits (likely auth error). Proceeding with infinite credits for local dev. Error: ${err}`);
+            console.error(`[MEMBER] Failed to check credits: ${err}`);
+            res.status(500).json({ ok: false, error: "Failed to check credits" });
+            return;
         }
 
         // Cost is 1 credit per variation
@@ -310,7 +342,7 @@ app.post("/generateMemberMockups", async (req, res) => {
                 console.log(`[MEMBER] Artwork URL found: ${artworkUrl}`);
             } catch (err) {
                 console.error(`[MEMBER] Failed to fetch artwork from DB: ${err}`);
-                res.status(500).json({ ok: false, error: "Failed to fetch artwork info (Auth Error)" });
+                res.status(500).json({ ok: false, error: "Failed to fetch artwork info" });
                 return;
             }
         } else {
@@ -326,7 +358,7 @@ app.post("/generateMemberMockups", async (req, res) => {
             tasks.push((async () => {
                 try {
                     console.log(`Generating ${product} variation ${i + 1}...`);
-                    const mockupUrl = await generateCategoryMockup(product, artworkUrl, customPrompt);
+                    const mockupUrl = await generateCategoryMockup(product, artworkUrl, customPrompt, aspectRatio);
 
                     if (mockupUrl) {
                         let mockupId = `temp_${Date.now()}_${i}`;
@@ -336,7 +368,7 @@ app.post("/generateMemberMockups", async (req, res) => {
                                 category: product,
                                 url: mockupUrl,
                                 artworkId,
-                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                createdAt: FieldValue.serverTimestamp(),
                                 variation: i + 1,
                                 aspectRatio: aspectRatio || "1:1",
                                 customPrompt: customPrompt || null
@@ -344,7 +376,7 @@ app.post("/generateMemberMockups", async (req, res) => {
                             mockupId = mockupRef.id;
                             console.log(`[MEMBER] Mockup saved with ID: ${mockupId}`);
                         } catch (err) {
-                            console.warn(`[MEMBER] Failed to save mockup to DB (likely auth error). Returning URL anyway. Error: ${err}`);
+                            console.error(`[MEMBER] Failed to save mockup to DB: ${err}`);
                         }
 
                         results.push({ id: mockupId, url: mockupUrl, category: product });
@@ -360,16 +392,16 @@ app.post("/generateMemberMockups", async (req, res) => {
 
         await Promise.all(tasks);
 
-        // Deduct credits (Graceful fallback)
+        // Deduct credits
         if (results.length > 0) {
             try {
                 console.log(`[MEMBER] Deducting ${results.length} credits`);
                 await userRef.update({
-                    credits: admin.firestore.FieldValue.increment(-results.length)
+                    credits: FieldValue.increment(-results.length)
                 });
                 console.log(`[MEMBER] Credits deducted`);
             } catch (err) {
-                console.warn(`[MEMBER] Failed to deduct credits (likely auth error). Ignoring. Error: ${err}`);
+                console.error(`[MEMBER] Failed to deduct credits: ${err}`);
             }
         }
 

@@ -12,13 +12,15 @@ export interface GuestMockupResult {
 
 export interface GuestMockupResponse {
     ok: boolean;
+    sessionId?: string;
     results: GuestMockupResult[];
     errors: { category: MockupCategory; message: string }[];
 }
 
 export interface SendGuestMockupsRequest {
     email: string;
-    mockupUrls: string[];
+    sessionId?: string;
+    mockupUrls?: string[];
 }
 
 export interface MemberMockupRequest {
@@ -41,4 +43,21 @@ export interface UserProfile {
     stripeCustomerId?: string;
     promo?: string;
     displayName?: string;
+}
+
+export interface Artwork {
+    id: string;
+    url: string;
+    name: string;
+    createdAt: any;
+}
+
+export interface Mockup {
+    id: string;
+    url: string;
+    category: string;
+    createdAt: any;
+    artworkId: string;
+    aspectRatio?: string;
+    customPrompt?: string;
 }

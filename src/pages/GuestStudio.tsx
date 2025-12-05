@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "../components/ui/button";
 import type { GuestMockupResponse } from "../types";
+import { useAuth } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 // Simple spinner component
 function Spinner() {
@@ -13,19 +15,31 @@ function Spinner() {
 }
 
 export function GuestStudio() {
+    const { user } = useAuth();
+    const navigate = useNavigate();
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [results, setResults] = useState<GuestMockupResponse | null>(null);
     const [email, setEmail] = useState("");
     const [isSending, setIsSending] = useState(false);
     const [emailSent, setEmailSent] = useState(false);
+    const [hasUsedFree, setHasUsedFree] = useState(() => {
+        // Initialize hasUsedFree directly from localStorage to prevent flicker
+        return localStorage.getItem("situ_guest_used") === "true";
+    });
 
-    // Debug: Log all clicks to see what is being clicked
-    // useEffect(() => {
-    //     const handler = (e: MouseEvent) => console.log('Global click detected on:', e.target);
-    //     window.addEventListener('click', handler);
-    //     return () => window.removeEventListener('click', handler);
-    // }, []);
+    useEffect(() => {
+        if (user) {
+            navigate("/member/studio");
+            return;
+        }
+
+        // This part is now redundant for initial state but kept for consistency if localStorage changes dynamically
+        const used = localStorage.getItem("situ_guest_used");
+        if (used && !hasUsedFree) { // Only update if not already true
+            setHasUsedFree(true);
+        }
+    }, [user, navigate, hasUsedFree]); // Added hasUsedFree to dependency array
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
@@ -88,9 +102,14 @@ export function GuestStudio() {
             await fetch(`${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email, mockupUrls }),
+                body: JSON.stringify({
+                    email,
+                    sessionId: results.sessionId,
+                    mockupUrls // Fallback
+                }),
             });
             setEmailSent(true);
+            localStorage.setItem("situ_guest_used", "true");
         } catch (error) {
             console.error("Error sending email:", error);
         } finally {
@@ -107,56 +126,67 @@ export function GuestStudio() {
 
             {!results ? (
                 <div className="max-w-xl mx-auto bg-white p-8 rounded-2xl border-2 border-dashed border-slate-300 text-center hover:border-slate-400 transition-colors">
-                    <div className="space-y-6">
-                        {previewUrl ? (
-                            <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-slate-200">
-                                <img src={previewUrl} alt="Preview" className="object-cover w-full h-full" />
-                                <button
-                                    onClick={() => { setPreviewUrl(null); }}
-                                    className="absolute top-2 right-2 bg-white/80 p-1 rounded-full hover:bg-white text-slate-600"
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
-                                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                            </div>
-                        )}
-
-                        <div>
-                            <label htmlFor="file-upload" className="cursor-pointer">
-                                <span className="bg-slate-900 text-white px-6 py-3 rounded-md font-medium hover:bg-slate-800 transition-colors inline-block">
-                                    {previewUrl ? "Change Artwork" : "Select Artwork"}
-                                </span>
-                                <input
-                                    id="file-upload"
-                                    type="file"
-                                    className="hidden"
-                                    accept="image/png, image/jpeg"
-                                    onChange={handleFileChange}
-                                />
-                            </label>
-                            <p className="text-sm text-slate-500 mt-4">JPG or PNG, up to 5MB</p>
+                    {hasUsedFree ? (
+                        <div className="py-8">
+                            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">👋</div>
+                            <h3 className="text-xl font-bold text-slate-900 mb-2">You've used your free guest mockups</h3>
+                            <p className="text-slate-600 mb-6">Create a free account to get 20 more credits and keep generating!</p>
+                            <Button onClick={() => navigate("/signup")} size="lg">
+                                Create Free Account
+                            </Button>
                         </div>
+                    ) : (
+                        <div className="space-y-6">
+                            {previewUrl ? (
+                                <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-slate-200">
+                                    <img src={previewUrl} alt="Preview" className="object-cover w-full h-full" />
+                                    <button
+                                        onClick={() => { setPreviewUrl(null); }}
+                                        className="absolute top-2 right-2 bg-white/80 p-1 rounded-full hover:bg-white text-slate-600"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
+                                    <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                    </svg>
+                                </div>
+                            )}
 
-                        {previewUrl && (
-                            <div className="pt-4 border-t border-slate-100">
-                                <Button onClick={handleGenerate} disabled={isGenerating} size="lg" className="w-full">
-                                    {isGenerating ? (
-                                        <>
-                                            <Spinner />
-                                            <span className="ml-2">Generating Mockups...</span>
-                                        </>
-                                    ) : (
-                                        "Generate Mockups"
-                                    )}
-                                </Button>
+                            <div>
+                                <label htmlFor="file-upload" className="cursor-pointer">
+                                    <span className="bg-slate-900 text-white px-6 py-3 rounded-md font-medium hover:bg-slate-800 transition-colors inline-block">
+                                        {previewUrl ? "Change Artwork" : "Select Artwork"}
+                                    </span>
+                                    <input
+                                        id="file-upload"
+                                        type="file"
+                                        className="hidden"
+                                        accept="image/png, image/jpeg"
+                                        onChange={handleFileChange}
+                                    />
+                                </label>
+                                <p className="text-sm text-slate-500 mt-4">JPG or PNG, up to 5MB</p>
                             </div>
-                        )}
-                    </div>
+
+                            {previewUrl && (
+                                <div className="pt-4 border-t border-slate-100">
+                                    <Button onClick={handleGenerate} disabled={isGenerating} size="lg" className="w-full">
+                                        {isGenerating ? (
+                                            <>
+                                                <Spinner />
+                                                <span className="ml-2">Generating… please wait about a minute.</span>
+                                            </>
+                                        ) : (
+                                            "Generate Mockups"
+                                        )}
+                                    </Button>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             ) : (
                 <div className="space-y-12">
