@@ -188,7 +188,7 @@ export function MemberStudio() {
                         aspectRatio: r.aspectRatio || "1:1"
                     }));
 
-                    setMockups(prev => [newMockups[0], ...prev]);
+                    setMockups(prev => [...newMockups, ...prev]);
                 }
 
                 if (data.errors && data.errors.length > 0) {
@@ -261,10 +261,10 @@ export function MemberStudio() {
         }
     };
 
-    if (loading) return <div className="flex justify-center items-center h-screen">Loading studio...</div>;
+    if (loading) return <div className="flex justify-center items-center h-screen text-brand-brown">Loading studio...</div>;
 
     return (
-        <div className="flex h-[calc(100vh-64px)] bg-slate-50 relative">
+        <div className="flex h-[calc(100vh-64px)] bg-brand-cream relative">
             {/* Modal */}
             {selectedMockupForView && (
                 <div
@@ -306,14 +306,14 @@ export function MemberStudio() {
             )}
 
             {/* Left Sidebar: Artwork Gallery */}
-            <div className="w-64 bg-white border-r border-slate-200 p-4 flex flex-col flex-shrink-0">
-                <h3 className="font-semibold text-sm text-slate-500 mb-3 uppercase tracking-wider">Your Artwork</h3>
+            <div className="w-64 bg-white/50 border-r border-brand-brown/10 p-4 flex flex-col flex-shrink-0">
+                <h3 className="font-semibold text-sm text-brand-brown/50 mb-3 uppercase tracking-wider">Your Artwork</h3>
 
                 <div className="flex-1 overflow-y-auto space-y-3">
                     <label className="block">
-                        <div className="border-2 border-dashed border-slate-200 rounded-lg p-4 text-center hover:bg-slate-50 hover:border-slate-300 cursor-pointer transition-all group">
-                            <span className="text-2xl text-slate-400 group-hover:text-slate-500 block mb-1">+</span>
-                            <p className="text-xs font-medium text-slate-500 group-hover:text-slate-600">
+                        <div className="border-2 border-dashed border-brand-brown/20 rounded-lg p-4 text-center hover:bg-brand-sand/30 hover:border-brand-brown/30 cursor-pointer transition-all group">
+                            <span className="text-2xl text-brand-brown/40 group-hover:text-brand-brown/60 block mb-1">+</span>
+                            <p className="text-xs font-medium text-brand-brown/50 group-hover:text-brand-brown/70">
                                 {uploading ? "Uploading..." : "Upload New"}
                             </p>
                             <input
@@ -331,8 +331,8 @@ export function MemberStudio() {
                             <div
                                 key={art.id}
                                 className={`aspect-square rounded-md overflow-hidden border-2 cursor-pointer transition-all ${selectedArtwork === art.id
-                                    ? 'border-slate-900 ring-1 ring-slate-900'
-                                    : 'border-transparent hover:border-slate-200'
+                                    ? 'border-brand-brown ring-1 ring-brand-brown'
+                                    : 'border-transparent hover:border-brand-brown/20'
                                     }`}
                                 onClick={() => setSelectedArtwork(art.id)}
                             >
@@ -344,9 +344,9 @@ export function MemberStudio() {
             </div>
 
             {/* Center: Mockups Grid */}
-            <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
-                <div className="h-16 border-b border-slate-200 bg-white px-8 flex items-center justify-between flex-shrink-0">
-                    <h1 className="text-xl font-bold text-slate-900">Member Studio</h1>
+            <div className="flex-1 flex flex-col min-w-0 bg-brand-cream">
+                <div className="h-16 border-b border-brand-brown/10 bg-white/50 px-8 flex items-center justify-between flex-shrink-0">
+                    <h1 className="text-xl font-bold text-brand-brown font-serif">Member Studio</h1>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-8">
@@ -396,10 +396,10 @@ export function MemberStudio() {
                                     </div>
                                     <div className="p-3">
                                         <div className="flex justify-between items-center">
-                                            <span className="text-xs font-medium bg-slate-100 px-2 py-1 rounded-full capitalize">
+                                            <span className="text-xs font-medium bg-brand-sand/20 px-2 py-1 rounded-full capitalize text-brand-brown">
                                                 {mockup.category}
                                             </span>
-                                            <span className="text-xs text-slate-400">
+                                            <span className="text-xs text-brand-brown/40">
                                                 {mockup.createdAt?.toDate ? mockup.createdAt.toDate().toLocaleDateString() : 'Just now'}
                                             </span>
                                         </div>
@@ -412,20 +412,20 @@ export function MemberStudio() {
             </div>
 
             {/* Right Sidebar: Controls */}
-            <div className="w-80 bg-white border-l border-slate-200 p-6 flex flex-col flex-shrink-0 overflow-y-auto">
+            <div className="w-80 bg-white/50 border-l border-brand-brown/10 p-6 flex flex-col flex-shrink-0 overflow-y-auto">
                 <div className="mb-8">
-                    <h2 className="text-lg font-bold text-slate-900 mb-1">Generate</h2>
-                    <p className="text-sm text-slate-500">Create new mockups from your art.</p>
+                    <h2 className="text-lg font-bold text-brand-brown mb-1 font-serif">Generate</h2>
+                    <p className="text-sm text-brand-brown/70">Create new mockups from your art.</p>
                 </div>
 
                 <div className="space-y-6 flex-1">
                     {/* Product Selection */}
                     <div>
-                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Product</label>
+                        <label className="text-xs font-semibold text-brand-brown/50 uppercase tracking-wider mb-2 block">Product</label>
                         <select
                             value={selectedProduct}
                             onChange={(e) => setSelectedProduct(e.target.value)}
-                            className="w-full text-sm border border-slate-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            className="w-full text-sm border border-brand-brown/20 rounded-full px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-brown bg-transparent text-brand-brown"
                         >
                             <option value="wall">Wall Art</option>
                             <option value="prints">Art Prints</option>
@@ -441,8 +441,8 @@ export function MemberStudio() {
                     {/* Variations */}
                     <div>
                         <div className="flex justify-between items-center mb-2">
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Variations</label>
-                            <span className="text-xs font-medium text-slate-900">{numVariations}</span>
+                            <label className="text-xs font-semibold text-brand-brown/50 uppercase tracking-wider">Variations</label>
+                            <span className="text-xs font-medium text-brand-brown">{numVariations}</span>
                         </div>
                         <input
                             type="range"
@@ -450,18 +450,18 @@ export function MemberStudio() {
                             max="4"
                             value={numVariations}
                             onChange={(e) => setNumVariations(parseInt(e.target.value))}
-                            className="w-full accent-slate-900"
+                            className="w-full accent-brand-olive"
                         />
-                        <p className="text-xs text-slate-400 mt-1">Generate multiple versions at once.</p>
+                        <p className="text-xs text-brand-brown/40 mt-1">Generate multiple versions at once.</p>
                     </div>
 
                     {/* Aspect Ratio */}
                     <div>
-                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Aspect Ratio</label>
+                        <label className="text-xs font-semibold text-brand-brown/50 uppercase tracking-wider mb-2 block">Aspect Ratio</label>
                         <select
                             value={aspectRatio}
                             onChange={(e) => setAspectRatio(e.target.value)}
-                            className="w-full text-sm border border-slate-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            className="w-full text-sm border border-brand-brown/20 rounded-full px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-brown bg-transparent text-brand-brown"
                         >
                             <option value="1:1">1:1 (Square)</option>
                             <option value="16:9">16:9 (Landscape)</option>
@@ -473,25 +473,25 @@ export function MemberStudio() {
 
                     {/* Custom Prompt */}
                     <div>
-                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Additional Details</label>
+                        <label className="text-xs font-semibold text-brand-brown/50 uppercase tracking-wider mb-2 block">Additional Details</label>
                         <textarea
                             value={customPrompt}
                             onChange={(e) => setCustomPrompt(e.target.value)}
                             placeholder="Describe the scene, lighting, or style (e.g., 'modern living room with plants', 'neon lighting')"
-                            className="w-full text-sm border border-slate-300 rounded-md px-3 py-2 h-24 resize-none focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            className="w-full text-sm border border-brand-brown/20 rounded-xl px-3 py-2 h-24 resize-none focus:outline-none focus:ring-2 focus:ring-brand-brown bg-transparent text-brand-brown placeholder:text-brand-brown/30"
                         />
                     </div>
                 </div>
 
                 {/* Footer: Credits & Action */}
-                <div className="mt-8 pt-6 border-t border-slate-100">
+                <div className="mt-8 pt-6 border-t border-brand-brown/10">
                     <div className="flex justify-between items-center mb-4">
-                        <span className="text-sm font-medium text-slate-600">Available Credits</span>
+                        <span className="text-sm font-medium text-brand-brown/70">Available Credits</span>
                         <div className="flex items-center gap-2">
-                            <span className="text-lg font-bold text-slate-900">{credits}</span>
+                            <span className="text-lg font-bold text-brand-brown">{credits}</span>
                             <button
                                 onClick={handleRefreshCredits}
-                                className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100 transition-colors"
+                                className="text-brand-brown/40 hover:text-brand-brown/70 p-1 rounded-full hover:bg-brand-sand/30 transition-colors"
                                 title="Refresh Credits"
                             >
                                 ⟳

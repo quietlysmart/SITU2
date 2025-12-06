@@ -18,78 +18,94 @@ export function Home() {
     return (
         <div className="flex flex-col">
             {/* Hero Section */}
-            <section className="relative py-20 md:py-32 overflow-hidden bg-slate-900">
-                {/* Background Image with Overlay */}
-                <div className="absolute inset-0 z-0">
+            {/* Hero Section */}
+            {/* Hero Section */}
+            {/* Hero Section */}
+            <section className="relative w-full max-w-7xl mx-auto mt-6 px-4">
+                <div className="relative w-full aspect-video md:aspect-[21/9] lg:aspect-[2.4/1] rounded-3xl overflow-hidden shadow-2xl isolate bg-[#8B877A]">
+                    {/* Background Image */}
                     <img
-                        src="/hero.jpg"
+                        src="/images/hero-wide.png"
                         alt="Situ Art Mockups"
-                        className="w-full h-full object-cover opacity-40"
+                        className="absolute inset-0 w-full h-full object-cover -z-20 mix-blend-overlay opacity-50"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent" />
-                </div>
 
-                <div className="container mx-auto px-4 text-center relative z-10">
-                    <h1 className="text-4xl md:text-6xl font-bold tracking-tight text-white mb-6 drop-shadow-lg">
-                        See your art in the real world.
-                    </h1>
-                    <p className="text-lg md:text-xl text-slate-200 mb-10 max-w-2xl mx-auto drop-shadow-md">
-                        Upload your artwork and instantly generate realistic mockups on walls, prints, apparel, and more. No complex software required.
-                    </p>
-                    <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                        <Button
-                            size="lg"
-                            className="w-full sm:w-auto text-base px-8 bg-white text-slate-900 hover:bg-slate-100"
-                            onClick={handleGetStarted}
-                        >
-                            Start with your artwork
-                        </Button>
+                    {/* Overlay Gradient/Scrim */}
+                    <div className="absolute inset-0 bg-black/20 -z-10"></div>
+
+                    {/* Content */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 md:p-12">
+                        <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight text-white mb-6 font-serif leading-tight animate-fade-in drop-shadow-lg">
+                            See your art in the world<br className="hidden md:block" /> in under a minute.
+                        </h1>
+                        <p className="text-lg md:text-xl text-white/90 mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-delay-1 drop-shadow-md font-medium">
+                            Upload one artwork and get a set of clean, realistic mockups for your socials, portfolio, and shop.
+                        </p>
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2">
+                            <Button
+                                size="lg"
+                                className="w-full sm:w-auto text-lg px-8 py-6 bg-brand-gold text-brand-brown hover:bg-white border-none shadow-xl hover:scale-105 transition-transform duration-200"
+                                onClick={handleGetStarted}
+                            >
+                                Start with your artwork
+                            </Button>
+                        </div>
                     </div>
                 </div>
             </section>
 
             {/* How it works */}
-            <section className="py-20 bg-white">
+            {/* How it works */}
+            <section className="py-24 bg-brand-cream border-t border-brand-brown/5">
                 <div className="container mx-auto px-4">
-                    <h2 className="text-3xl font-bold text-center text-slate-900 mb-16">How it works</h2>
+                    <h2 className="text-3xl font-bold text-center text-brand-brown mb-16 font-serif">How it works</h2>
                     <div className="grid md:grid-cols-3 gap-12">
                         <div className="text-center space-y-4">
-                            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold">1</div>
-                            <h3 className="text-xl font-semibold text-slate-900">Upload your art</h3>
-                            <p className="text-slate-600">Drag and drop your high-res artwork file. We handle the rest.</p>
+                            <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">1</div>
+                            <h3 className="text-xl font-semibold text-brand-brown">Upload your art</h3>
+                            <p className="text-brand-brown/70">Drag and drop your high-res artwork file. We handle the rest.</p>
                         </div>
                         <div className="text-center space-y-4">
-                            <div className="w-16 h-16 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold">2</div>
-                            <h3 className="text-xl font-semibold text-slate-900">AI Generation</h3>
-                            <p className="text-slate-600">Our AI places your art on realistic products with perfect lighting and perspective.</p>
+                            <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">2</div>
+                            <h3 className="text-xl font-semibold text-brand-brown">AI Generation</h3>
+                            <p className="text-brand-brown/70">Our AI places your art on realistic products with perfect lighting and perspective.</p>
                         </div>
                         <div className="text-center space-y-4">
-                            <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold">3</div>
-                            <h3 className="text-xl font-semibold text-slate-900">Download & Share</h3>
-                            <p className="text-slate-600">Get high-quality mockups ready for your shop or social media.</p>
+                            <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">3</div>
+                            <h3 className="text-xl font-semibold text-brand-brown">Download & Share</h3>
+                            <p className="text-brand-brown/70">Get high-quality mockups ready for your shop or social media.</p>
                         </div>
                     </div>
                 </div>
             </section>
 
             {/* What Situ can do */}
-            <section className="py-20 bg-slate-50">
+            {/* What Situ can do */}
+            <section className="py-24 bg-brand-sand/30">
                 <div className="container mx-auto px-4">
-                    <h2 className="text-3xl font-bold text-center text-slate-900 mb-16">What Situ can do</h2>
+                    <h2 className="text-3xl font-bold text-center text-brand-brown mb-16 font-serif">What Situ can do</h2>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
                         {[
-                            { title: "Wall Display", desc: "Gallery-quality frames in modern interiors.", img: "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?auto=format&fit=crop&w=400&q=80" },
-                            { title: "Print Collections", desc: "Art prints, postcards, and stationery sets.", img: "https://images.unsplash.com/photo-1612198188060-c7c2a3b66eae?auto=format&fit=crop&w=400&q=80" },
-                            { title: "Apparel", desc: "T-shirts, hoodies, and tote bags.", img: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=400&q=80" },
-                            { title: "Phone Cases", desc: "Custom cases for iPhone and Android.", img: "https://images.unsplash.com/photo-1586105251261-72a756497a11?auto=format&fit=crop&w=400&q=80" }
-                        ].map((item) => (
-                            <div key={item.title} className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden hover:shadow-md transition-shadow">
-                                <div className="aspect-square bg-slate-200 relative">
-                                    <img src={item.img} alt={item.title} className="w-full h-full object-cover" />
+                            { title: "Wall Display", desc: "Gallery-quality frames in modern interiors.", img: "/images/feature-wall.png" },
+                            { title: "Print Collections", desc: "Art prints, postcards, and stationery sets.", img: "/images/feature-print.png" },
+                            { title: "Apparel", desc: "T-shirts, hoodies, and tote bags.", img: "/images/feature-apparel.png" },
+                            { title: "Phone Cases", desc: "Custom cases for iPhone and Android.", img: "/images/feature-phone.png" }
+                        ].map((item, index) => (
+                            <div
+                                key={item.title}
+                                className="bg-brand-cream rounded-xl border border-brand-brown/10 overflow-hidden hover:border-brand-brown/20 hover:shadow-md transition-all group"
+                                style={{ animationDelay: `${index * 100}ms` }}
+                            >
+                                <div className="aspect-square bg-brand-sand relative overflow-hidden">
+                                    <img
+                                        src={item.img}
+                                        alt={item.title}
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                    />
                                 </div>
                                 <div className="p-6">
-                                    <h3 className="font-semibold text-slate-900 mb-2">{item.title}</h3>
-                                    <p className="text-sm text-slate-600">{item.desc}</p>
+                                    <h3 className="font-semibold text-brand-brown mb-2 font-serif">{item.title}</h3>
+                                    <p className="text-sm text-brand-brown/70">{item.desc}</p>
                                 </div>
                             </div>
                         ))}
@@ -98,28 +114,29 @@ export function Home() {
             </section>
 
             {/* Pricing Section */}
-            <section className="py-20 bg-white">
+            <section className="py-24 bg-brand-cream border-t border-brand-brown/5">
                 <div className="container mx-auto px-4">
                     <div className="text-center max-w-2xl mx-auto mb-16">
-                        <h2 className="text-3xl font-bold text-slate-900 mb-4">Simple, transparent pricing</h2>
-                        <p className="text-lg text-slate-600">Choose the plan that fits your creative workflow.</p>
-                        <div className="mt-6 inline-block bg-blue-50 text-blue-700 px-4 py-2 rounded-full text-sm font-medium">
+                        <h2 className="text-3xl font-bold text-brand-brown mb-4 font-serif">Simple, transparent pricing</h2>
+                        <p className="text-lg text-brand-brown/70">Choose the plan that fits your creative workflow.</p>
+                        <div className="mt-6 inline-block bg-brand-sand text-brand-brown px-4 py-2 rounded-full text-sm font-medium">
                             Early testing: 20 images free for new members
                         </div>
                     </div>
 
                     <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
                         {/* Monthly */}
-                        <div className="border border-slate-200 rounded-2xl p-8 flex flex-col">
+                        <div className="border border-brand-brown/10 rounded-3xl p-8 flex flex-col bg-white/50 backdrop-blur-sm">
                             <div className="mb-4">
-                                <h3 className="text-xl font-bold text-slate-900">Monthly</h3>
-                                <div className="mt-2 flex items-baseline text-slate-900">
+                                <h3 className="text-xl font-bold text-brand-brown font-serif">Monthly</h3>
+                                <div className="mt-2 flex items-baseline text-brand-brown">
                                     <span className="text-4xl font-bold tracking-tight">$12</span>
-                                    <span className="ml-1 text-slate-500">/month</span>
+                                    <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
                             </div>
-                            <p className="text-slate-600 mb-6">Perfect for occasional projects.</p>
+                            <p className="text-brand-brown/70 mb-8">Perfect for occasional projects.</p>
                             <Button
+                                variant="outline"
                                 className="w-full mt-auto"
                                 onClick={() => handleGetStarted()}
                             >
@@ -128,19 +145,19 @@ export function Home() {
                         </div>
 
                         {/* 3 Months */}
-                        <div className="border-2 border-slate-900 rounded-2xl p-8 flex flex-col relative shadow-lg">
-                            <div className="absolute top-0 right-0 -mt-3 -mr-3 bg-slate-900 text-white text-xs font-bold px-3 py-1 rounded-full">
+                        <div className="border border-brand-brown rounded-3xl p-8 flex flex-col relative bg-white shadow-xl shadow-brand-brown/5 transform md:-translate-y-4">
+                            <div className="absolute top-0 right-0 -mt-3 -mr-3 bg-brand-brown text-brand-cream text-xs font-bold px-3 py-1 rounded-full">
                                 POPULAR
                             </div>
                             <div className="mb-4">
-                                <h3 className="text-xl font-bold text-slate-900">3 Months</h3>
-                                <div className="mt-2 flex items-baseline text-slate-900">
+                                <h3 className="text-xl font-bold text-brand-brown font-serif">3 Months</h3>
+                                <div className="mt-2 flex items-baseline text-brand-brown">
                                     <span className="text-4xl font-bold tracking-tight">$10</span>
-                                    <span className="ml-1 text-slate-500">/month</span>
+                                    <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
-                                <p className="text-sm text-slate-500 mt-1">Billed $30 every 3 months</p>
+                                <p className="text-sm text-brand-brown/60 mt-1">Billed $30 every 3 months</p>
                             </div>
-                            <p className="text-slate-600 mb-6">Great for active artists.</p>
+                            <p className="text-brand-brown/80 mb-8">Great for active artists.</p>
                             <Button
                                 className="w-full mt-auto"
                                 onClick={() => handleGetStarted()}
@@ -150,17 +167,18 @@ export function Home() {
                         </div>
 
                         {/* 6 Months */}
-                        <div className="border border-slate-200 rounded-2xl p-8 flex flex-col">
+                        <div className="border border-brand-brown/10 rounded-3xl p-8 flex flex-col bg-white/50 backdrop-blur-sm">
                             <div className="mb-4">
-                                <h3 className="text-xl font-bold text-slate-900">6 Months</h3>
-                                <div className="mt-2 flex items-baseline text-slate-900">
+                                <h3 className="text-xl font-bold text-brand-brown font-serif">6 Months</h3>
+                                <div className="mt-2 flex items-baseline text-brand-brown">
                                     <span className="text-4xl font-bold tracking-tight">$7</span>
-                                    <span className="ml-1 text-slate-500">/month</span>
+                                    <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
-                                <p className="text-sm text-slate-500 mt-1">Billed $42 every 6 months</p>
+                                <p className="text-sm text-brand-brown/60 mt-1">Billed $42 every 6 months</p>
                             </div>
-                            <p className="text-slate-600 mb-6">Best value for long-term use.</p>
+                            <p className="text-brand-brown/70 mb-8">Best value for long-term use.</p>
                             <Button
+                                variant="outline"
                                 className="w-full mt-auto"
                                 onClick={() => handleGetStarted()}
                             >
@@ -172,11 +190,11 @@ export function Home() {
             </section>
 
             {/* CTA */}
-            <section className="py-20 bg-slate-900 text-white">
+            <section className="py-24 bg-brand-brown text-brand-cream">
                 <div className="container mx-auto px-4 text-center">
-                    <h2 className="text-3xl md:text-4xl font-bold mb-6">Ready to see your art in the world?</h2>
-                    <Link to="/studio">
-                        <Button size="lg" variant="secondary" className="px-8 text-base">
+                    <h2 className="text-3xl md:text-5xl font-bold mb-8 font-serif">Ready to see your art in the world?</h2>
+                    <Link to="/guest">
+                        <Button size="lg" className="bg-brand-cream text-brand-brown hover:bg-brand-cream/90 px-10 text-lg">
                             Start with your artwork
                         </Button>
                     </Link>

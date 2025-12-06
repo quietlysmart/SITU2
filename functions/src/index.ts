@@ -5,6 +5,7 @@ import cors from "cors";
 import Stripe from "stripe";
 import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
+import * as crypto from "crypto";
 import { generateCategoryMockup, editImage } from "./nanobanana";
 import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
 
@@ -87,6 +88,38 @@ app.get("/health", (req, res) => {
     res.json({ ok: true, service: "situ-api", timestamp: new Date().toISOString() });
 });
 
+async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
+    const bucket = admin.storage().bucket();
+    const matches = dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+
+    if (!matches || matches.length !== 3) {
+        throw new Error('Invalid data URL');
+    }
+
+    const mimeType = matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    const file = bucket.file(path);
+
+    await file.save(buffer, {
+        metadata: { contentType: mimeType }
+    });
+
+    // Use Firebase Storage Download Token (works for UBLA & Local Emulator without Service Account)
+    const token = crypto.randomUUID();
+    await file.setMetadata({
+        metadata: {
+            firebaseStorageDownloadTokens: token,
+        }
+    });
+
+    // Construct the public URL manually
+    // Format: https://firebasestorage.googleapis.com/v0/b/[bucket]/o/[path]?alt=media&token=[token]
+    const encodedPath = encodeURIComponent(path).replace(/\//g, "%2F");
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media&token=${token}`;
+
+    return url;
+}
+
 app.post("/generateGuestMockups", async (req, res) => {
     try {
         const { artworkUrl } = req.body as GuestMockupRequest;
@@ -97,17 +130,19 @@ app.post("/generateGuestMockups", async (req, res) => {
         }
 
         // Generate mockups
+        const tempResults: { category: string; dataUrl: string }[] = [];
         const results: GuestMockupResponse["results"] = [];
         const errors: GuestMockupResponse["errors"] = [];
 
         // For guest, we generate 4 standard mockups
         const categories = ["wall", "prints", "wearable", "phone"] as const;
 
+        // 1. Generate all (get Data URLs)
         for (const category of categories) {
             try {
-                const url = await generateCategoryMockup(category, artworkUrl);
-                if (url) {
-                    results.push({ category, url });
+                const dataUrl = await generateCategoryMockup(category, artworkUrl);
+                if (dataUrl) {
+                    tempResults.push({ category, dataUrl });
                 } else {
                     errors.push({ category, message: "Generation failed" });
                 }
@@ -117,21 +152,39 @@ app.post("/generateGuestMockups", async (req, res) => {
             }
         }
 
-        // Store guest session
-        let sessionId: string | undefined;
+        // 2. Upload to Storage (to avoid Firestore size limits)
+        let sessionId = "";
+
+        // We create a session ID first to organize storage
+        // Actually, let's just use UUID or random string if we don't have doc ID yet.
+        // Or we can create the doc ref first.
+        const sessionRef = db.collection("guest_sessions").doc();
+        sessionId = sessionRef.id;
+
+        for (const item of tempResults) {
+            try {
+                const storagePath = `guest_sessions/${sessionId}/${item.category}_${Date.now()}.png`;
+                const storageUrl = await uploadDataUrl(item.dataUrl, storagePath);
+                results.push({ category: item.category as any, url: storageUrl });
+            } catch (error: any) {
+                logger.error(`Error uploading ${item.category}:`, error);
+                errors.push({ category: item.category as any, message: `Upload failed: ${error.message}` });
+            }
+        }
+
+        // 3. Store guest session with STORAGE URLs (small strings)
         if (results.length > 0) {
-            const sessionRef = await db.collection("guest_sessions").add({
+            await sessionRef.set({
                 results,
                 createdAt: FieldValue.serverTimestamp(),
                 status: "generated",
-                artworkUrl // optionally store the input artwork URL
+                artworkUrl
             });
-            sessionId = sessionRef.id;
         }
 
         const response: GuestMockupResponse = {
             ok: true,
-            sessionId,
+            sessionId: results.length > 0 ? sessionId : undefined,
             results,
             errors,
         };
@@ -358,15 +411,20 @@ app.post("/generateMemberMockups", async (req, res) => {
             tasks.push((async () => {
                 try {
                     console.log(`Generating ${product} variation ${i + 1}...`);
-                    const mockupUrl = await generateCategoryMockup(product, artworkUrl, customPrompt, aspectRatio);
+                    const dataUrl = await generateCategoryMockup(product, artworkUrl, customPrompt, aspectRatio);
 
-                    if (mockupUrl) {
+                    if (dataUrl) {
                         let mockupId = `temp_${Date.now()}_${i}`;
                         try {
+                            // Upload to Storage
+                            console.log(`[MEMBER] Uploading mockup to Storage...`);
+                            const storagePath = `users/${uid}/mockups/${Date.now()}_${product}_${i}.png`;
+                            const storageUrl = await uploadDataUrl(dataUrl, storagePath);
+
                             console.log(`[MEMBER] Saving mockup to Firestore...`);
                             const mockupRef = await db.collection("users").doc(uid).collection("mockups").add({
                                 category: product,
-                                url: mockupUrl,
+                                url: storageUrl, // Save storage URL instead of data URL
                                 artworkId,
                                 createdAt: FieldValue.serverTimestamp(),
                                 variation: i + 1,
@@ -375,11 +433,14 @@ app.post("/generateMemberMockups", async (req, res) => {
                             });
                             mockupId = mockupRef.id;
                             console.log(`[MEMBER] Mockup saved with ID: ${mockupId}`);
-                        } catch (err) {
-                            console.error(`[MEMBER] Failed to save mockup to DB: ${err}`);
-                        }
 
-                        results.push({ id: mockupId, url: mockupUrl, category: product });
+                            results.push({ id: mockupId, url: storageUrl, category: product });
+                        } catch (err) {
+                            console.error(`[MEMBER] Failed to save mockup: ${err}`);
+                            // If upload worked but firestore failed, we might still want to return success? 
+                            // Or better to fail so user knows? 
+                            // For now, if Firestore fails, we consider it a failure.
+                        }
                     } else {
                         errors.push({ category: product, message: "Generation failed" });
                     }

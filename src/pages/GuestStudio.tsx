@@ -120,17 +120,17 @@ export function GuestStudio() {
     return (
         <div className="container mx-auto px-4 py-12 max-w-5xl">
             <div className="text-center mb-12">
-                <h1 className="text-3xl font-bold text-slate-900 mb-4">Guest Studio</h1>
-                <p className="text-slate-600">Upload your artwork to see it on real products.</p>
+                <h1 className="text-3xl font-bold text-brand-brown mb-4 font-serif">Guest Studio</h1>
+                <p className="text-brand-brown/70">Upload your artwork to see it on real products.</p>
             </div>
 
             {!results ? (
-                <div className="max-w-xl mx-auto bg-white p-8 rounded-2xl border-2 border-dashed border-slate-300 text-center hover:border-slate-400 transition-colors">
+                <div className="max-w-xl mx-auto bg-white/50 p-8 rounded-3xl border-2 border-dashed border-brand-brown/20 text-center hover:border-brand-brown/40 transition-colors">
                     {hasUsedFree ? (
                         <div className="py-8">
-                            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">👋</div>
-                            <h3 className="text-xl font-bold text-slate-900 mb-2">You've used your free guest mockups</h3>
-                            <p className="text-slate-600 mb-6">Create a free account to get 20 more credits and keep generating!</p>
+                            <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">👋</div>
+                            <h3 className="text-xl font-bold text-brand-brown mb-2 font-serif">You've used your free guest mockups</h3>
+                            <p className="text-brand-brown/70 mb-6">Create a free account to get 20 more credits and keep generating!</p>
                             <Button onClick={() => navigate("/signup")} size="lg">
                                 Create Free Account
                             </Button>
@@ -138,17 +138,17 @@ export function GuestStudio() {
                     ) : (
                         <div className="space-y-6">
                             {previewUrl ? (
-                                <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-slate-200">
+                                <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-brand-brown/10">
                                     <img src={previewUrl} alt="Preview" className="object-cover w-full h-full" />
                                     <button
                                         onClick={() => { setPreviewUrl(null); }}
-                                        className="absolute top-2 right-2 bg-white/80 p-1 rounded-full hover:bg-white text-slate-600"
+                                        className="absolute top-2 right-2 bg-white/80 p-1 rounded-full hover:bg-white text-brand-brown"
                                     >
                                         ✕
                                     </button>
                                 </div>
                             ) : (
-                                <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
+                                <div className="w-24 h-24 bg-brand-sand/50 rounded-full flex items-center justify-center mx-auto text-brand-brown/40">
                                     <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                     </svg>
@@ -157,7 +157,7 @@ export function GuestStudio() {
 
                             <div>
                                 <label htmlFor="file-upload" className="cursor-pointer">
-                                    <span className="bg-slate-900 text-white px-6 py-3 rounded-md font-medium hover:bg-slate-800 transition-colors inline-block">
+                                    <span className="bg-brand-brown text-brand-cream px-6 py-3 rounded-full font-medium hover:bg-brand-brown/90 transition-colors inline-block font-sans">
                                         {previewUrl ? "Change Artwork" : "Select Artwork"}
                                     </span>
                                     <input
@@ -168,17 +168,18 @@ export function GuestStudio() {
                                         onChange={handleFileChange}
                                     />
                                 </label>
-                                <p className="text-sm text-slate-500 mt-4">JPG or PNG, up to 5MB</p>
+                                <p className="text-sm text-brand-brown/60 mt-4">JPG or PNG, up to 5MB</p>
                             </div>
+
 
                             {previewUrl && (
                                 <div className="pt-4 border-t border-slate-100">
-                                    <Button onClick={handleGenerate} disabled={isGenerating} size="lg" className="w-full">
+                                    <Button onClick={handleGenerate} disabled={isGenerating} size="lg" className="w-full font-bold">
                                         {isGenerating ? (
-                                            <>
+                                            <div className="flex items-center justify-center text-brand-brown">
                                                 <Spinner />
-                                                <span className="ml-2">Generating… please wait about a minute.</span>
-                                            </>
+                                                <span className="ml-2 font-medium">Generating… this will take about a minute.</span>
+                                            </div>
                                         ) : (
                                             "Generate Mockups"
                                         )}
@@ -192,8 +193,8 @@ export function GuestStudio() {
                 <div className="space-y-12">
                     <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
                         {results.results.map((result, idx) => (
-                            <div key={idx} className="bg-white rounded-xl overflow-hidden shadow-sm border border-slate-200">
-                                <div className="aspect-[4/5] bg-slate-100 relative">
+                            <div key={idx} className="bg-white rounded-xl overflow-hidden shadow-sm border border-brand-brown/10">
+                                <div className="aspect-[4/5] bg-brand-sand relative">
                                     {result.url ? (
                                         <img src={result.url} alt={result.category} className="w-full h-full object-cover" />
                                     ) : (
@@ -218,13 +219,13 @@ export function GuestStudio() {
                     <div className="max-w-md mx-auto bg-slate-50 p-8 rounded-2xl text-center">
                         {!emailSent ? (
                             <>
-                                <h3 className="text-xl font-bold text-slate-900 mb-2">Keep your mockups</h3>
-                                <p className="text-slate-600 mb-6">Enter your email to receive these 4 high-res mockups instantly.</p>
+                                <h3 className="text-xl font-bold text-brand-brown mb-2 font-serif">Keep your mockups</h3>
+                                <p className="text-brand-brown/70 mb-6">Enter your email to receive these 4 high-res mockups instantly.</p>
                                 <div className="flex gap-2">
                                     <input
                                         type="email"
                                         placeholder="you@example.com"
-                                        className="flex-1 px-4 py-2 rounded-md border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                        className="flex-1 px-4 py-2 rounded-full border border-brand-brown/20 focus:outline-none focus:ring-2 focus:ring-brand-brown bg-white"
                                         value={email}
                                         onChange={(e) => setEmail(e.target.value)}
                                     />
@@ -240,8 +241,8 @@ export function GuestStudio() {
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                                     </svg>
                                 </div>
-                                <h3 className="text-xl font-bold mb-2">Sent!</h3>
-                                <p className="text-slate-600 mb-4">Check your inbox for your mockups.</p>
+                                <h3 className="text-xl font-bold mb-2 text-brand-brown">Sent!</h3>
+                                <p className="text-brand-brown/70 mb-4">Check your inbox for your mockups.</p>
                                 <Button variant="outline" onClick={() => window.location.href = '/signup?promo=early-tester-20'}>
                                     Create account & get 20 free credits
                                 </Button>
