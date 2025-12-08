@@ -43,3 +43,7 @@ export interface UserProfile {
     stripeCustomerId?: string;
     promo?: string;
 }
+
+export interface ClaimGuestSessionRequest {
+    sessionId: string;
+}

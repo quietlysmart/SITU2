@@ -20,9 +20,11 @@ export function GuestStudio() {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [results, setResults] = useState<GuestMockupResponse | null>(null);
+    const [generationError, setGenerationError] = useState<string | null>(null);
     const [email, setEmail] = useState("");
     const [isSending, setIsSending] = useState(false);
     const [emailSent, setEmailSent] = useState(false);
+    const [emailError, setEmailError] = useState<string | null>(null);
     const [hasUsedFree, setHasUsedFree] = useState(() => {
         // Initialize hasUsedFree directly from localStorage to prevent flicker
         return localStorage.getItem("situ_guest_used") === "true";
@@ -60,6 +62,7 @@ export function GuestStudio() {
         }
 
         setIsGenerating(true);
+        setGenerationError(null);
         console.log("Starting generation with previewUrl length:", previewUrl.length);
         try {
             const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/generateGuestMockups`;
@@ -76,17 +79,16 @@ export function GuestStudio() {
             console.log("Response status:", response.status);
 
             if (!response.ok) {
-                const errorText = await response.text();
-                console.error("API Error:", response.status, errorText);
-                throw new Error(`API Error: ${response.status} ${errorText}`);
+                const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+                throw new Error(errorData.error || `API Error: ${response.status}`);
             }
 
             const data = await response.json();
             console.log("Generation data received:", data);
             setResults(data);
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error generating mockups:", error);
-            // Handle error state
+            setGenerationError(error.message || "Failed to generate mockups. Please try again.");
         } finally {
             setIsGenerating(false);
             console.log("Generation finished");
@@ -97,9 +99,10 @@ export function GuestStudio() {
         if (!email || !results?.results) return;
 
         setIsSending(true);
+        setEmailError(null);
         try {
             const mockupUrls = results.results.map(r => r.url).filter(u => u !== null) as string[];
-            await fetch(`${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`, {
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -108,10 +111,17 @@ export function GuestStudio() {
                     mockupUrls // Fallback
                 }),
             });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+                throw new Error(errorData.error || "Failed to send email");
+            }
+
             setEmailSent(true);
             localStorage.setItem("situ_guest_used", "true");
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error sending email:", error);
+            setEmailError(error.message || "We couldn't send the email. Please try again.");
         } finally {
             setIsSending(false);
         }
@@ -130,13 +140,19 @@ export function GuestStudio() {
                         <div className="py-8">
                             <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">👋</div>
                             <h3 className="text-xl font-bold text-brand-brown mb-2 font-serif">You've used your free guest mockups</h3>
-                            <p className="text-brand-brown/70 mb-6">Create a free account to get 20 more credits and keep generating!</p>
+                            <p className="text-brand-brown/70 mb-6">Create a free account to get 12 more credits and keep generating!</p>
                             <Button onClick={() => navigate("/signup")} size="lg">
                                 Create Free Account
                             </Button>
                         </div>
                     ) : (
                         <div className="space-y-6">
+                            {generationError && (
+                                <div className="bg-red-50 text-red-600 p-4 rounded-lg mb-4 text-center text-sm border border-red-200">
+                                    {generationError}
+                                </div>
+                            )}
+
                             {previewUrl ? (
                                 <div className="relative aspect-square w-48 mx-auto overflow-hidden rounded-lg border border-brand-brown/10">
                                     <img src={previewUrl} alt="Preview" className="object-cover w-full h-full" />
@@ -178,7 +194,7 @@ export function GuestStudio() {
                                         {isGenerating ? (
                                             <div className="flex items-center justify-center text-brand-brown">
                                                 <Spinner />
-                                                <span className="ml-2 font-medium">Generating… this will take about a minute.</span>
+                                                <span className="ml-2 font-medium">Generating… please wait about a minute</span>
                                             </div>
                                         ) : (
                                             "Generate Mockups"
@@ -233,6 +249,9 @@ export function GuestStudio() {
                                         {isSending ? <Spinner /> : "Send"}
                                     </Button>
                                 </div>
+                                {emailError && (
+                                    <p className="text-red-500 text-sm mt-2">{emailError}</p>
+                                )}
                             </>
                         ) : (
                             <div className="text-green-600">
@@ -241,11 +260,42 @@ export function GuestStudio() {
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                                     </svg>
                                 </div>
-                                <h3 className="text-xl font-bold mb-2 text-brand-brown">Sent!</h3>
-                                <p className="text-brand-brown/70 mb-4">Check your inbox for your mockups.</p>
-                                <Button variant="outline" onClick={() => window.location.href = '/signup?promo=early-tester-20'}>
-                                    Create account & get 20 free credits
-                                </Button>
+                                <h3 className="text-xl font-bold mb-4 text-brand-brown font-serif">Want to create more mockups from any artwork?</h3>
+
+                                <p className="text-brand-brown/70 mb-6 text-sm">
+                                    Create a free Situ account to generate many more mockups with any design, on a wider range of products like wall art, prints, apparel, phone cases, mugs, tote bags, and more – in portrait, square, or landscape formats.
+                                </p>
+
+                                <div className="space-y-3">
+                                    <Button size="lg" className="w-full" onClick={() => navigate(results.sessionId ? `/signup?guestSession=${results.sessionId}` : '/signup')}>
+                                        Create a free account and get 12 credits
+                                    </Button>
+
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="text-brand-brown/60 hover:text-brand-brown"
+                                        onClick={() => {
+                                            // Reset state to generating mode
+                                            setResults(null);
+                                            setPreviewUrl(null);
+                                            setEmailSent(false);
+                                            setHasUsedFree(true); // Ensure they can't spam free ones if that's the logic (though backend limits it properly usually, or localstorage does)
+                                            // Actually, if they used free, they should probably be blocked or redirected?
+                                            // Requirements: "Link back to the public Guest Studio page"
+                                            // Since we are ON the guest studio page, we just reset, but localstorage might block them.
+                                            // If the intention is to allow them to "Create More" via account, that's the main button.
+                                            // The user asked "Create More Mockups" button in EMAIL to link here. 
+                                            // BUT in PART 5 "Guest Studio CTA Copy", it asks for "Create a free Situ account..." 
+                                            // Wait, Part 4 says: "Button “Create More Mockups” currently does nothing in local dev... Wire it up so that it links back to the public Guest Studio page". This refers to the EMAIL button.
+                                            // Part 5 refers to the UI "Sent!" block.
+                                            // So here we primarily want the Sign Up button.
+                                        }}
+                                    >
+                                        Back to Guest Studio
+                                    </Button>
+
+                                </div>
                             </div>
                         )}
                     </div>

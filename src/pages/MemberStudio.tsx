@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { db, storage } from "../lib/firebase";
-import { collection, addDoc, query, onSnapshot, doc, serverTimestamp, orderBy, setDoc, where } from "firebase/firestore";
+import { collection, addDoc, query, onSnapshot, doc, serverTimestamp, orderBy, setDoc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router-dom";
@@ -51,7 +51,7 @@ export function MemberStudio() {
                         displayName: user.displayName,
                         createdAt: serverTimestamp(),
                         plan: "free",
-                        credits: 20
+                        credits: 12
                     });
                 } catch (err) {
                     console.error("Failed to create missing profile", err);
@@ -88,15 +88,16 @@ export function MemberStudio() {
     // Separate effect for mockups to avoid re-subscribing when other things change
     useEffect(() => {
         if (authLoading || !user || !selectedArtwork) {
-            setMockups([]); // Clear mockups if no user, no artwork, or still loading auth
+            setMockups([]);
             return;
         }
 
         console.log(`[MemberStudio] Subscribing to mockups for artwork ${selectedArtwork}`);
 
+        // Ensure we handle duplicate keys by relying on Firestore IDs which are unique
+        // Removed filter by selectedArtwork to show ALL mockups
         const q = query(
             collection(db, "users", user.uid, "mockups"),
-            where("artworkId", "==", selectedArtwork), // Filter mockups by the selected artwork's ID
             orderBy("createdAt", "desc")
         );
 
@@ -106,17 +107,17 @@ export function MemberStudio() {
                 ...doc.data()
             })) as Mockup[];
 
-            console.log(`[MemberStudio] Loaded ${results.length} mockups for artwork ${selectedArtwork}`);
-            setMockups(results);
+            // Filter out any potential duplicates client-side just in case, though Firestore shouldn't return dupes in snapshot
+            const uniqueResults = Array.from(new Map(results.map(item => [item.id, item])).values());
+
+            console.log(`[MemberStudio] Loaded ${uniqueResults.length} mockups`);
+            setMockups(uniqueResults);
         }, (error) => {
-            console.error("[MemberStudio] Failed to load mockups. MISSING INDEX? Run 'firebase deploy --only firestore:indexes'", error);
-            // If you encounter this error, it means you need to create a composite index in Firestore.
-            // The index would be on 'artworkId' (ascending) and 'createdAt' (descending) for the 'mockups' collection.
-            // You can create it manually in the Firebase console or by deploying an `firestore.indexes.json` file.
+            console.error("[MemberStudio] Failed to load mockups.", error);
         });
 
         return () => unsubMockups();
-    }, [user, authLoading, selectedArtwork]); // Dependencies for mockups subscription
+    }, [user, authLoading]); // Removed selectedArtwork dependency
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || !e.target.files[0] || !user) return;
@@ -172,24 +173,9 @@ export function MemberStudio() {
 
             const data = await response.json();
             if (data.ok) {
-                // Update credits immediately from response
-                if (typeof data.remainingCredits === 'number') {
-                    setCredits(data.remainingCredits);
-                }
-
-                // Manually update state to show results immediately (Optimistic UI)
-                if (data.results && data.results.length > 0) {
-                    const newMockups = data.results.map((r: any) => ({
-                        id: r.id || `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                        url: r.url,
-                        category: r.category,
-                        createdAt: { toDate: () => new Date() }, // Mock Firestore timestamp
-                        artworkId: selectedArtwork,
-                        aspectRatio: r.aspectRatio || "1:1"
-                    }));
-
-                    setMockups(prev => [...newMockups, ...prev]);
-                }
+                // We rely on the Firestore listeners (onSnapshot) to update credits and mockups automatically.
+                // This prevents duplicate keys and "disappearing" items caused by race conditions between
+                // manual state updates and real-time listeners.
 
                 if (data.errors && data.errors.length > 0) {
                     console.warn("Some variations failed:", data.errors);
@@ -244,7 +230,12 @@ export function MemberStudio() {
 
     const handleDownload = async (url: string, filename: string) => {
         try {
-            const response = await fetch(url);
+            // Attempt to fetch and blob it to force download
+            // Note: This requires CORS to be configured on the Storage bucket.
+            // If CORS is not set, this fetch will fail, and we fall back to opening in a new tab.
+            const response = await fetch(url, { mode: 'cors' });
+            if (!response.ok) throw new Error("Fetch failed");
+
             const blob = await response.blob();
             const blobUrl = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
@@ -255,8 +246,7 @@ export function MemberStudio() {
             document.body.removeChild(link);
             window.URL.revokeObjectURL(blobUrl);
         } catch (error) {
-            console.error("Download failed:", error);
-            // Fallback to opening in new tab
+            console.warn("Download fetch failed (likely CORS), falling back to new tab.");
             window.open(url, '_blank');
         }
     };
@@ -435,6 +425,7 @@ export function MemberStudio() {
                             <option value="tote">Tote Bag</option>
                             <option value="pillow">Throw Pillow</option>
                             <option value="notebook">Notebook</option>
+                            <option value="patch">Embroidered Patch</option>
                         </select>
                     </div>
 

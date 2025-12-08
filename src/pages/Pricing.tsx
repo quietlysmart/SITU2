@@ -2,22 +2,25 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
-import { loadStripe } from "@stripe/stripe-js";
-
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
 
 export function Pricing() {
     const { user } = useAuth();
     const navigate = useNavigate();
     const [loading, setLoading] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
-    const handleSubscribe = async (priceId: string) => {
+    // TODO: Before production, ensure APP_BASE_URL, STRIPE_SUCCESS_URL, and STRIPE_CANCEL_URL are updated in .env
+
+    const handleSubscribe = async (plan: "monthly" | "quarterly" | "sixMonths") => {
         if (!user) {
+            // Store pending plan so we can resume after signup
+            localStorage.setItem("situ_pending_plan", plan);
             navigate("/signup");
             return;
         }
 
-        setLoading(priceId);
+        setLoading(plan);
+        setError(null);
         try {
             const token = await user.getIdToken();
             const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`, {
@@ -27,33 +30,31 @@ export function Pricing() {
                     "Authorization": `Bearer ${token}`,
                 },
                 body: JSON.stringify({
-                    priceId,
-                    successUrl: `${window.location.origin}/member/studio?session_id={CHECKOUT_SESSION_ID}`,
-                    cancelUrl: window.location.href,
+                    plan,
                 }),
             });
 
-            const { sessionId } = await response.json();
-            const stripe = await stripePromise;
-            if (stripe) {
-                const { error } = await (stripe as any).redirectToCheckout({ sessionId });
-                if (error) {
-                    console.error("Stripe redirect error:", error);
-                }
+            const data = await response.json();
+
+            if (!response.ok) {
+                console.error("Network response was not ok", data);
+                setError(data.error || "Failed to start checkout");
+                setLoading(null); // Clear loading on error
+                return;
+            }
+
+            if (data.url) {
+                window.location.href = data.url;
+            } else {
+                console.error("No checkout URL returned:", data);
+                setError("No checkout URL returned from server");
+                setLoading(null);
             }
         } catch (error) {
             console.error("Checkout error:", error);
-        } finally {
+            setError("An unexpected error occurred");
             setLoading(null);
         }
-    };
-
-    // These should come from env but for now we'll use placeholders or assume they are set
-    // In a real app, we'd read these from import.meta.env
-    const PRICES = {
-        monthly: "price_monthly_placeholder",
-        threeMonth: "price_3month_placeholder",
-        sixMonth: "price_6month_placeholder",
     };
 
     return (
@@ -63,8 +64,13 @@ export function Pricing() {
                     <h1 className="text-4xl md:text-5xl font-bold text-brand-brown mb-6 font-serif">Simple, transparent pricing</h1>
                     <p className="text-xl text-brand-brown/70">Choose the plan that fits your creative workflow.</p>
                     <div className="mt-8 inline-block bg-brand-sand text-brand-brown px-6 py-2 rounded-full text-sm font-medium">
-                        Early testing: 20 images free for new members
+                        Early testing: 12 images free for new members
                     </div>
+                    {error && (
+                        <div className="mt-4 text-red-500 font-medium bg-red-50 p-2 rounded max-w-md mx-auto">
+                            {error}
+                        </div>
+                    )}
                 </div>
 
                 <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
@@ -81,10 +87,10 @@ export function Pricing() {
                         <Button
                             variant="outline"
                             className="w-full mt-auto"
-                            onClick={() => handleSubscribe(PRICES.monthly)}
-                            disabled={loading === PRICES.monthly}
+                            onClick={() => handleSubscribe("monthly")}
+                            disabled={loading !== null}
                         >
-                            {loading === PRICES.monthly ? "Loading..." : "Start Monthly"}
+                            {loading === "monthly" ? "Redirecting to Stripe..." : "Start Monthly"}
                         </Button>
                     </div>
 
@@ -104,10 +110,10 @@ export function Pricing() {
                         <p className="text-brand-brown/80 mb-8">Great for active artists.</p>
                         <Button
                             className="w-full mt-auto"
-                            onClick={() => handleSubscribe(PRICES.threeMonth)}
-                            disabled={loading === PRICES.threeMonth}
+                            onClick={() => handleSubscribe("quarterly")}
+                            disabled={loading !== null}
                         >
-                            {loading === PRICES.threeMonth ? "Loading..." : "Start Quarterly"}
+                            {loading === "quarterly" ? "Redirecting to Stripe..." : "Start Quarterly"}
                         </Button>
                     </div>
 
@@ -125,10 +131,10 @@ export function Pricing() {
                         <Button
                             variant="outline"
                             className="w-full mt-auto"
-                            onClick={() => handleSubscribe(PRICES.sixMonth)}
-                            disabled={loading === PRICES.sixMonth}
+                            onClick={() => handleSubscribe("sixMonths")}
+                            disabled={loading !== null}
                         >
-                            {loading === PRICES.sixMonth ? "Loading..." : "Start Biannual"}
+                            {loading === "sixMonths" ? "Redirecting to Stripe..." : "Start Biannual"}
                         </Button>
                     </div>
                 </div>

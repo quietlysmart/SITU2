@@ -33,9 +33,16 @@ export function Navbar() {
                 <div className="flex items-center gap-4">
                     {user ? (
                         <>
-                            <span className="text-sm font-medium text-brand-brown">
-                                {user.displayName || user.email}
-                            </span>
+                            <div className="flex items-center gap-2 mr-2">
+                                <Link to="/account" className="flex items-center gap-2 group">
+                                    <div className="w-8 h-8 rounded-full bg-brand-brown text-brand-cream flex items-center justify-center font-bold text-xs border border-brand-brown/20 group-hover:ring-2 ring-brand-brown/30 transition-all">
+                                        {user.displayName ? user.displayName.charAt(0).toUpperCase() : user.email?.charAt(0).toUpperCase()}
+                                    </div>
+                                    <span className="text-sm font-medium text-brand-brown hidden md:block group-hover:underline">
+                                        {user.displayName || "Account"}
+                                    </span>
+                                </Link>
+                            </div>
                             <Button variant="ghost" size="sm" onClick={handleLogout} className="text-brand-brown hover:text-brand-brown hover:bg-brand-brown/10">Log out</Button>
                         </>
                     ) : (

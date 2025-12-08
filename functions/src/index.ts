@@ -1,4 +1,6 @@
 import { onRequest } from "firebase-functions/v2/https";
+import "dotenv/config";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
 import express from "express";
 import cors from "cors";
@@ -8,6 +10,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import * as crypto from "crypto";
 import { generateCategoryMockup, editImage } from "./nanobanana";
 import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
+import { emailService } from "./emailService";
 
 admin.initializeApp({
     projectId: "situ-477910",
@@ -122,11 +125,30 @@ async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
 
 app.post("/generateGuestMockups", async (req, res) => {
     try {
-        const { artworkUrl } = req.body as GuestMockupRequest;
+        let { artworkUrl } = req.body as GuestMockupRequest;
 
         if (!artworkUrl) {
             res.status(400).json({ ok: false, error: "Missing artworkUrl" });
             return;
+        }
+
+        // Create a session ID first
+        const sessionRef = db.collection("guest_sessions").doc();
+        const sessionId = sessionRef.id;
+
+        // If artworkUrl is a base64 Data URL, upload it to Storage first
+        // to avoid hitting Firestore 1MB limit.
+        if (artworkUrl.startsWith("data:")) {
+            try {
+                const storagePath = `guest_sessions/${sessionId}/original_artwork_${Date.now()}.png`;
+                artworkUrl = await uploadDataUrl(artworkUrl, storagePath);
+                logger.info(`[generateGuestMockups] Uploaded base64 artwork to ${artworkUrl}`);
+            } catch (err: any) {
+                logger.error("[generateGuestMockups] Failed to upload input artwork", err);
+                // We could fail hard, or try to proceed if it's small enough (but likely it's not)
+                res.status(500).json({ ok: false, error: "Failed to process artwork image." });
+                return;
+            }
         }
 
         // Generate mockups
@@ -152,15 +174,7 @@ app.post("/generateGuestMockups", async (req, res) => {
             }
         }
 
-        // 2. Upload to Storage (to avoid Firestore size limits)
-        let sessionId = "";
-
-        // We create a session ID first to organize storage
-        // Actually, let's just use UUID or random string if we don't have doc ID yet.
-        // Or we can create the doc ref first.
-        const sessionRef = db.collection("guest_sessions").doc();
-        sessionId = sessionRef.id;
-
+        // 2. Upload generated mockups to Storage
         for (const item of tempResults) {
             try {
                 const storagePath = `guest_sessions/${sessionId}/${item.category}_${Date.now()}.png`;
@@ -178,8 +192,15 @@ app.post("/generateGuestMockups", async (req, res) => {
                 results,
                 createdAt: FieldValue.serverTimestamp(),
                 status: "generated",
-                artworkUrl
+                artworkUrl // Now this is a short https:// URL
             });
+        } else {
+            res.status(500).json({
+                ok: false,
+                error: "All generations failed.",
+                errors
+            });
+            return;
         }
 
         const response: GuestMockupResponse = {
@@ -207,6 +228,8 @@ app.post("/sendGuestMockups", async (req, res) => {
             return;
         }
 
+        let urlsToSend: string[] = [];
+
         if (sessionId) {
             // Upstream preferred way: update the existing session
             await db.collection("guest_sessions").doc(sessionId).update({
@@ -214,24 +237,44 @@ app.post("/sendGuestMockups", async (req, res) => {
                 status: "pending_email",
                 emailRequestsAt: FieldValue.serverTimestamp()
             });
-            // Also log for debugging
+
             const sessionDoc = await db.collection("guest_sessions").doc(sessionId).get();
             const sessionData = sessionDoc.data();
-            const urls = sessionData?.results?.map((r: any) => r.url) || [];
-            logger.info(`[MOCK EMAIL] Would send email to ${email} with ${urls.length} mockups (session ${sessionId}).`);
+            urlsToSend = sessionData?.results?.map((r: any) => r.url) || [];
 
         } else if (mockupUrls && mockupUrls.length > 0) {
             // Legacy way (or fallback)
+            urlsToSend = mockupUrls;
+
+            // Also store for analytics if needed
             await db.collection("guest_mockups").add({
                 email,
                 mockupUrls,
                 createdAt: FieldValue.serverTimestamp(),
-                status: "pending_email"
+                status: "sent_email"
             });
-            logger.info(`[MOCK EMAIL] Would send email to ${email} with ${mockupUrls.length} mockups (legacy).`);
         } else {
             res.status(400).json({ ok: false, error: "Missing sessionId or mockupUrls" });
             return;
+        }
+
+        if (urlsToSend.length === 0) {
+            res.status(400).json({ ok: false, error: "No mockups to send." });
+            return;
+        }
+
+        // Call Email Service
+        await emailService.sendGuestMockups({
+            email,
+            mockupUrls: urlsToSend
+        });
+
+        // Update status if session exists
+        if (sessionId) {
+            await db.collection("guest_sessions").doc(sessionId).update({
+                status: "email_sent",
+                emailSentAt: FieldValue.serverTimestamp()
+            });
         }
 
         res.json({ ok: true });
@@ -243,7 +286,10 @@ app.post("/sendGuestMockups", async (req, res) => {
 
 app.post("/createCheckoutSession", async (req, res) => {
     try {
-        const { priceId, successUrl, cancelUrl } = req.body;
+        const { plan, successUrl, cancelUrl } = req.body;
+
+        logger.info(`[createCheckoutSession] Request received for plan: ${plan}`);
+
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             res.status(401).json({ ok: false, error: "Unauthorized" });
@@ -252,6 +298,41 @@ app.post("/createCheckoutSession", async (req, res) => {
         const idToken = authHeader.split("Bearer ")[1];
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
+
+        // Map plan to Price ID from Env
+        let priceId = "";
+        // Strict mapping based on user request
+        switch (plan) {
+            case "monthly":
+                priceId = process.env.STRIPE_PRICE_MONTHLY_ID || "";
+                break;
+            case "quarterly":
+                priceId = process.env.STRIPE_PRICE_QUARTERLY_ID || "";
+                break;
+            case "sixMonths":
+                priceId = process.env.STRIPE_PRICE_SIX_MONTHS_ID || "";
+                break;
+            default:
+                logger.error(`[createCheckoutSession] Invalid plan: ${plan}`);
+                res.status(400).json({ ok: false, error: "Invalid plan selected" });
+                return;
+        }
+
+        if (!priceId) {
+            logger.error(`[createCheckoutSession] Price ID not found for plan: ${plan}. 
+                Env Checks:
+                MONTHLY: ${process.env.STRIPE_PRICE_MONTHLY_ID} (${process.env.STRIPE_PRICE_MONTHLY_ID ? 'Set' : 'Missing'})
+                QUARTERLY: ${process.env.STRIPE_PRICE_QUARTERLY_ID} (${process.env.STRIPE_PRICE_QUARTERLY_ID ? 'Set' : 'Missing'})
+                SIXMONTHS: ${process.env.STRIPE_PRICE_SIX_MONTHS_ID} (${process.env.STRIPE_PRICE_SIX_MONTHS_ID ? 'Set' : 'Missing'})
+            `);
+            res.status(500).json({ ok: false, error: "Server configuration error: Price ID missing" });
+            return;
+        }
+
+        logger.info(`[createCheckoutSession] Using Price ID: ${priceId}`);
+
+        // ... rest of function ...
+
 
         const userDoc = await db.collection("users").doc(uid).get();
         const userData = userDoc.data();
@@ -267,19 +348,126 @@ app.post("/createCheckoutSession", async (req, res) => {
             await db.collection("users").doc(uid).update({ stripeCustomerId: customerId });
         }
 
+        // Use Env vars for URLs, with fallback to request body for flexibility (though plan implies strict env usage)
+        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL || successUrl || "http://localhost:5174/member/studio";
+        const txnCancelUrl = process.env.STRIPE_CANCEL_URL || cancelUrl || "http://localhost:5174/pricing";
+
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
             payment_method_types: ["card"],
             line_items: [{ price: priceId, quantity: 1 }],
             mode: "subscription",
-            success_url: successUrl,
-            cancel_url: cancelUrl,
+            success_url: `${txnSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: txnCancelUrl,
             metadata: { firebaseUid: uid },
         });
+
+        logger.info(`[createCheckoutSession] Session created: ${session.id}`);
 
         res.json({ ok: true, sessionId: session.id, url: session.url });
     } catch (error: any) {
         logger.error("createCheckoutSession error", error);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
+app.post("/claimGuestSession", async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+
+        logger.info(`[claimGuestSession] Request received for session: ${sessionId}`);
+
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            res.status(401).json({ ok: false, error: "Unauthorized" });
+            return;
+        }
+        const idToken = authHeader.split("Bearer ")[1];
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const uid = decodedToken.uid;
+        const email = decodedToken.email;
+
+        if (!sessionId) {
+            res.status(400).json({ ok: false, error: "Missing sessionId" });
+            return;
+        }
+
+        const sessionRef = db.collection("guest_sessions").doc(sessionId);
+        const sessionDoc = await sessionRef.get();
+
+        if (!sessionDoc.exists) {
+            res.status(404).json({ ok: false, error: "Guest session not found" });
+            return;
+        }
+
+        const sessionData = sessionDoc.data();
+        if (sessionData?.claimedBy) {
+            res.status(400).json({ ok: false, error: "Session already claimed" });
+            return;
+        }
+
+        // Verify email match if possible (optional but good for security)
+        // If guest session has no email (didn't send yet), we might let them claim if they just created it?
+        // But usually they enter email to send.
+        if (sessionData?.email && sessionData.email !== email) {
+            logger.warn(`[claimGuestSession] Email mismatch. Session: ${sessionData.email}, User: ${email}`);
+            // We'll allow it for now as user might sign up with different email, but it's a bit risky.
+            // User requirement: "If guestSessionId is present and the guest session’s email matches the signup email"
+            // So we MUST enforce it.
+            if (sessionData.email.toLowerCase() !== email?.toLowerCase()) {
+                res.status(403).json({ ok: false, error: "Email mismatch. Please sign up with the same email used in Guest Studio." });
+                return;
+            }
+        }
+
+        const artworkUrl = sessionData?.artworkUrl;
+        const results = sessionData?.results || [];
+
+        logger.info(`[claimGuestSession] Found ${results.length} mockups to allow copy.`);
+
+        // 1. Copy artwork
+        if (artworkUrl) {
+            logger.info(`[claimGuestSession] Copying artwork: ${artworkUrl}`);
+            await db.collection("users").doc(uid).collection("artworks").add({
+                url: artworkUrl,
+                name: "Imported from Guest Studio",
+                createdAt: FieldValue.serverTimestamp(),
+            });
+        } else {
+            logger.warn("[claimGuestSession] No artworkUrl found in session.");
+        }
+
+        // 2. Copy mockups
+        if (results.length > 0) {
+            const batch = db.batch();
+            for (const item of results) {
+                const mockupRef = db.collection("users").doc(uid).collection("mockups").doc(); // Auto-ID
+                batch.set(mockupRef, {
+                    category: item.category,
+                    url: item.url,
+                    artworkUrl: artworkUrl, // Link loosely
+                    createdAt: FieldValue.serverTimestamp(),
+                    importedFromGuest: true
+                });
+            }
+            await batch.commit();
+            logger.info(`[claimGuestSession] Copied ${results.length} mockups to user text.`);
+        } else {
+            logger.warn("[claimGuestSession] No results array found to copy.");
+        }
+
+        // 3. Mark session as claimed
+        await sessionRef.update({
+            claimedBy: uid,
+            claimedAt: FieldValue.serverTimestamp()
+        });
+
+        logger.info(`[claimGuestSession] Successfully claimed session ${sessionId} for user ${uid}`);
+
+        res.json({ ok: true, copiedCount: results.length });
+
+    } catch (error: any) {
+        logger.error("claimGuestSession error", error);
         res.status(500).json({ ok: false, error: error.message });
     }
 });
@@ -476,3 +664,68 @@ app.post("/generateMemberMockups", async (req, res) => {
 });
 
 export const api = onRequest({ memory: "1GiB", timeoutSeconds: 300 }, app);
+
+// Temporary cleanup function
+app.post("/nukeEverything", async (req, res) => {
+    try {
+        const { confirmation } = req.body;
+        if (confirmation !== "I_AM_SURE_NUKE_DEV_DATA") {
+            res.status(400).json({ ok: false, error: "Invalid confirmation code" });
+            return;
+        }
+
+        logger.warn("[NUKE] Starting database wipe...");
+
+        // 1. Delete all users in Firestore and Auth
+        const usersSnap = await db.collection("users").get();
+        for (const doc of usersSnap.docs) {
+            const uid = doc.id;
+            // recursive delete subcollections usually requires tools, but we can try simple loop
+            const mockupsSnap = await db.collection("users").doc(uid).collection("mockups").get();
+            const artworksSnap = await db.collection("users").doc(uid).collection("artworks").get();
+
+            const batch = db.batch();
+            mockupsSnap.docs.forEach(d => batch.delete(d.ref));
+            artworksSnap.docs.forEach(d => batch.delete(d.ref));
+            batch.delete(doc.ref);
+            await batch.commit();
+
+            try {
+                await admin.auth().deleteUser(uid);
+                logger.info(`[NUKE] Deleted user ${uid}`);
+            } catch (e) {
+                logger.error(`[NUKE] Failed to delete auth user ${uid}`, e);
+            }
+        }
+
+        // 2. Delete all Guest Sessions
+        const sessionsSnap = await db.collection("guest_sessions").get();
+        const batchSessions = db.batch();
+        sessionsSnap.docs.forEach(d => batchSessions.delete(d.ref));
+        await batchSessions.commit();
+        logger.info("[NUKE] Deleted guest sessions.");
+
+        res.json({ ok: true, message: "Nuked." });
+    } catch (error: any) {
+        logger.error("Nuke error", error);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+// Firestore Notification Trigger for Welcome Email
+exports.onUserCreated = onDocumentCreated("users/{uid}", async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) {
+        logger.warn("[onUserCreated] No data associated with the event");
+        return;
+    }
+    const userData = snapshot.data();
+    const email = userData.email;
+    const displayName = userData.displayName;
+
+    if (email) {
+        logger.info(`[onUserCreated] New user created: ${email}. Sending welcome email.`);
+        await emailService.sendWelcomeEmail(email, displayName);
+    } else {
+        logger.warn(`[onUserCreated] User ${event.params.uid} has no email.`);
+    }
+});

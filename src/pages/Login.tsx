@@ -9,7 +9,25 @@ export function Login() {
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    const [resetSent, setResetSent] = useState(false);
     const navigate = useNavigate();
+
+    const handleForgotPassword = async () => {
+        if (!email) {
+            setError("Please enter your email address first.");
+            return;
+        }
+        try {
+            await import("firebase/auth").then(module => module.sendPasswordResetEmail(auth, email));
+            setResetSent(true);
+            setError("");
+        } catch (err: any) {
+            console.error("Reset password error:", err);
+            // Don't reveal if user exists or not usually, but for UX 'user not found' might happen. 
+            // We'll just say "If an account exists..."
+            setResetSent(true);
+        }
+    };
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -54,9 +72,21 @@ export function Login() {
                     />
                 </div>
                 {error && <p className="text-red-500 text-sm">{error}</p>}
+                {resetSent && <p className="text-green-600 text-sm bg-green-50 p-3 rounded">If an account exists with this email, we've sent password reset instructions.</p>}
+
                 <Button type="submit" className="w-full" disabled={loading}>
                     {loading ? "Logging in..." : "Log In"}
                 </Button>
+
+                <div className="text-center">
+                    <button
+                        type="button"
+                        onClick={handleForgotPassword}
+                        className="text-sm text-brand-brown/60 hover:text-brand-brown hover:underline"
+                    >
+                        Forgot password?
+                    </button>
+                </div>
             </form>
             <p className="mt-4 text-center text-sm text-brand-brown/70">
                 Don't have an account? <Link to="/signup" className="text-brand-brown font-bold hover:underline">Sign up</Link>

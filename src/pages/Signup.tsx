@@ -15,6 +15,7 @@ export function Signup() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const promo = searchParams.get("promo");
+    const guestSessionId = searchParams.get("guestSession");
 
     const handleSignup = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -34,7 +35,7 @@ export function Signup() {
                 displayName: name,
                 createdAt: serverTimestamp(),
                 plan: "free",
-                credits: 20, // Default to 20 credits for everyone
+                credits: 12, // Default to 12 credits for everyone (updated from 20)
                 ...(promo ? { promo } : {}),
             };
 
@@ -47,10 +48,71 @@ export function Signup() {
             try {
                 await Promise.race([createProfilePromise, timeoutPromise]);
                 console.log("Profile created successfully");
+
+                // Trigger Welcome Email (now handled by Backend Firestore Trigger on creation)
+                // But if we wanted to be double sure or explicit, we rely on the trigger.
+
             } catch (profileError) {
                 console.error("Profile creation failed or timed out:", profileError);
                 // We continue anyway because the Auth account is created. 
-                // The user can still use the app, and we can try to create the profile later or lazily.
+            }
+
+            // Claim Guest Session if present
+            if (guestSessionId) {
+                try {
+                    console.log("Claiming guest session:", guestSessionId);
+                    const token = await user.getIdToken();
+                    const claimRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/claimGuestSession`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ sessionId: guestSessionId })
+                    });
+
+                    if (!claimRes.ok) {
+                        console.error("Failed to claim guest session", await claimRes.json());
+                        // Non-blocking error, user still gets account
+                    } else {
+                        console.log("Guest session claimed!");
+                    }
+                } catch (err) {
+                    console.error("Error claiming guest session:", err);
+                }
+            }
+
+            // Check for Pending Plan (from Pricing page)
+            const pendingPlan = localStorage.getItem("situ_pending_plan");
+            if (pendingPlan) {
+                console.log("Found pending plan:", pendingPlan);
+                // Clear it so it doesn't trigger again
+                localStorage.removeItem("situ_pending_plan");
+
+                // Start Checkout Flow
+                try {
+                    const token = await user.getIdToken();
+                    const checkoutRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Bearer ${token}`,
+                        },
+                        body: JSON.stringify({ plan: pendingPlan }),
+                    });
+
+                    const checkoutData = await checkoutRes.json();
+                    if (checkoutData.ok && checkoutData.url) {
+                        console.log("Redirecting to Stripe for pending plan...");
+                        window.location.href = checkoutData.url;
+                        return; // Stop here, don't navigate to Member Studio
+                    } else {
+                        console.error("Failed to start pending plan checkout:", checkoutData);
+                        // Fallback to Member Studio if Stripe fails
+                    }
+                } catch (checkoutErr) {
+                    console.error("Error starting pending plan checkout:", checkoutErr);
+                }
             }
 
             navigate("/member/studio");
@@ -75,6 +137,12 @@ export function Signup() {
             {promo === "early-tester-20" && (
                 <div className="bg-green-50 text-green-700 p-4 rounded-md mb-6 text-center text-sm">
                     🎉 You'll get 20 free credits!
+                </div>
+            )}
+            {/* General banner if no specific promo, or maybe just update the promo text if generic */}
+            {!promo && (
+                <div className="bg-brand-sand/30 text-brand-brown p-4 rounded-md mb-6 text-center text-sm font-medium">
+                    Create an account to get 12 free credits
                 </div>
             )}
             <form onSubmit={handleSignup} className="space-y-4">

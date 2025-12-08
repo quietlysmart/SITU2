@@ -22,16 +22,16 @@ export function Home() {
             {/* Hero Section */}
             {/* Hero Section */}
             <section className="relative w-full max-w-7xl mx-auto mt-6 px-4">
-                <div className="relative w-full aspect-video md:aspect-[21/9] lg:aspect-[2.4/1] rounded-3xl overflow-hidden shadow-2xl isolate bg-[#8B877A]">
+                <div className="relative w-full aspect-video md:aspect-[21/9] lg:aspect-[2.4/1] rounded-3xl overflow-hidden shadow-2xl isolate bg-[#2A2A2A]">
                     {/* Background Image */}
                     <img
-                        src="/images/hero-wide.png"
+                        src="/images/hero-final.jpg"
                         alt="Situ Art Mockups"
-                        className="absolute inset-0 w-full h-full object-cover -z-20 mix-blend-overlay opacity-50"
+                        className="absolute inset-0 w-full h-full object-cover -z-20 brightness-75"
                     />
 
                     {/* Overlay Gradient/Scrim */}
-                    <div className="absolute inset-0 bg-black/20 -z-10"></div>
+                    <div className="absolute inset-0 bg-black/30 -z-10"></div>
 
                     {/* Content */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 md:p-12">
