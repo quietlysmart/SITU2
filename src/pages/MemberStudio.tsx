@@ -28,6 +28,8 @@ export function MemberStudio() {
 
     // Modal State
     const [selectedMockupForView, setSelectedMockupForView] = useState<any | null>(null);
+    const [showLowCreditsPopup, setShowLowCreditsPopup] = useState(false);
+    const [userPlan, setUserPlan] = useState<string>("free");
 
     // Auth & Data Subscription
     useEffect(() => {
@@ -41,7 +43,16 @@ export function MemberStudio() {
         const unsubUser = onSnapshot(doc(db, "users", user.uid), async (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
-                setCredits(data.credits || 0);
+                const currentCredits = data.credits || 0;
+                const plan = data.plan || "free";
+
+                setCredits(currentCredits);
+                setUserPlan(plan);
+
+                // Show low credits popup for free users when credits <= 4
+                if (plan === "free" && currentCredits <= 4 && currentCredits > 0) {
+                    setShowLowCreditsPopup(true);
+                }
             } else {
                 // Profile missing (e.g. signup timeout). Create it now.
                 console.log("User profile missing, creating default...");
@@ -85,39 +96,39 @@ export function MemberStudio() {
         };
     }, [user, authLoading, navigate]); // Removed selectedArtwork from dependencies
 
-    // Separate effect for mockups to avoid re-subscribing when other things change
+    // Separate effect for mockups - always subscribe when we have a user
     useEffect(() => {
-        if (authLoading || !user || !selectedArtwork) {
+        if (authLoading || !user) {
             setMockups([]);
             return;
         }
 
-        console.log(`[MemberStudio] Subscribing to mockups for artwork ${selectedArtwork}`);
+        console.log(`[MemberStudio] Setting up mockups subscription for user ${user.uid}`);
 
-        // Ensure we handle duplicate keys by relying on Firestore IDs which are unique
-        // Removed filter by selectedArtwork to show ALL mockups
         const q = query(
             collection(db, "users", user.uid, "mockups"),
             orderBy("createdAt", "desc")
         );
 
         const unsubMockups = onSnapshot(q, (snapshot) => {
+            console.log(`[MemberStudio] onSnapshot fired! Got ${snapshot.docs.length} docs`);
             const results = snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
             })) as Mockup[];
 
-            // Filter out any potential duplicates client-side just in case, though Firestore shouldn't return dupes in snapshot
             const uniqueResults = Array.from(new Map(results.map(item => [item.id, item])).values());
-
-            console.log(`[MemberStudio] Loaded ${uniqueResults.length} mockups`);
+            console.log(`[MemberStudio] Setting ${uniqueResults.length} mockups to state`);
             setMockups(uniqueResults);
         }, (error) => {
             console.error("[MemberStudio] Failed to load mockups.", error);
         });
 
-        return () => unsubMockups();
-    }, [user, authLoading]); // Removed selectedArtwork dependency
+        return () => {
+            console.log("[MemberStudio] Cleaning up mockups subscription");
+            unsubMockups();
+        };
+    }, [user, authLoading]);
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || !e.target.files[0] || !user) return;
@@ -142,13 +153,27 @@ export function MemberStudio() {
     };
 
     const handleGenerate = async () => {
-        if (!selectedArtwork || !user) return;
+        console.log("[MemberStudio] handleGenerate called!");
+        console.log("[MemberStudio] selectedArtwork:", selectedArtwork);
+        console.log("[MemberStudio] user:", user?.uid);
+        console.log("[MemberStudio] selectedProduct:", selectedProduct);
+
+        if (!selectedArtwork || !user) {
+            console.log("[MemberStudio] Early return - missing artwork or user");
+            return;
+        }
 
         setGenerating(true);
         try {
             const token = await user.getIdToken();
             const selectedArtworkObj = artworks.find(a => a.id === selectedArtwork);
             const artworkUrl = selectedArtworkObj?.url;
+
+            console.log("[MemberStudio] About to call API...");
+            console.log("[MemberStudio] artworkId:", selectedArtwork);
+            console.log("[MemberStudio] artworkUrl:", artworkUrl);
+            console.log("[MemberStudio] product:", selectedProduct);
+            console.log("[MemberStudio] API URL:", import.meta.env.VITE_API_BASE_URL);
 
             const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/generateMemberMockups`, {
                 method: "POST",
@@ -166,13 +191,18 @@ export function MemberStudio() {
                 }),
             });
 
+            console.log("[MemberStudio] Response status:", response.status);
+
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || "Generation failed");
             }
 
             const data = await response.json();
+            console.log("[MemberStudio] Response data:", JSON.stringify(data, null, 2));
+
             if (data.ok) {
+                console.log("[MemberStudio] Generation successful, results:", data.results?.length || 0);
                 // We rely on the Firestore listeners (onSnapshot) to update credits and mockups automatically.
                 // This prevents duplicate keys and "disappearing" items caused by race conditions between
                 // manual state updates and real-time listeners.
@@ -194,39 +224,7 @@ export function MemberStudio() {
         }
     };
 
-    const handleRefreshCredits = async () => {
-        if (!user) return;
-        setLoading(true);
-        try {
-            // Use onSnapshot for a one-time fetch with error handling, then immediately unsubscribe
-            const unsubscribe = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    console.log("[MemberStudio] User data updated:", data);
-                    setCredits(data.credits || 0);
-                }
-                unsubscribe(); // Unsubscribe immediately after getting the data
-            }, (error) => {
-                console.error("[MemberStudio] Failed to listen to user data:", error);
-                // If there's an error, we might still want to set loading to false
-                setLoading(false);
-            });
-        } catch (error) {
-            // This catch block would only catch errors in setting up the listener, not during the listener's execution
-            console.error("Failed to refresh credits (listener setup error):", error);
-        } finally {
-            // The finally block here might execute before the onSnapshot callback if it's asynchronous.
-            // It's better to manage setLoading(false) within the onSnapshot callbacks.
-            // For a "refresh" function, getDoc is typically used for a single fetch.
-            // If the intent is to ensure the listener is working, the useEffect already handles it.
-            // For a manual refresh, getDoc is more direct.
-            // Reverting to getDoc for a single refresh, but adding the console.log for consistency.
-            // If the instruction strictly means to use onSnapshot *here*, then the finally block needs careful handling.
-            // Given the instruction, I'll adapt the onSnapshot to behave like a one-time fetch for "refresh".
-            // The `unsubscribe()` call inside the success callback makes it behave like a one-time fetch.
-            // The `setLoading(false)` needs to be called in both success and error paths of the onSnapshot.
-        }
-    };
+
 
     const handleDownload = async (url: string, filename: string) => {
         try {
@@ -295,6 +293,49 @@ export function MemberStudio() {
                 </div>
             )}
 
+            {/* Low Credits Popup for Free Users */}
+            {showLowCreditsPopup && userPlan === "free" && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                    onClick={() => setShowLowCreditsPopup(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-amber-100 flex items-center justify-center text-3xl">
+                                ⚠️
+                            </div>
+                            <h2 className="text-xl font-bold text-brand-brown mb-2">Credits Running Low</h2>
+                            <p className="text-brand-brown/70 mb-6">
+                                You have <span className="font-bold text-amber-600">{credits}</span> credits remaining.
+                                Want 12 more free credits? Fill out our quick feedback form!
+                            </p>
+                            <div className="space-y-3">
+                                <a
+                                    href="https://docs.google.com/forms/d/e/1FAIpQLSc3UMMIEpwxO05bsf_LFfHyTCz9pAO-tGV_BbNmOWaE79_bAg/viewform?usp=publish-editor"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="block"
+                                >
+                                    <Button className="w-full">
+                                        Get 12 Free Credits
+                                    </Button>
+                                </a>
+                                <Button
+                                    variant="ghost"
+                                    className="w-full text-brand-brown/50"
+                                    onClick={() => setShowLowCreditsPopup(false)}
+                                >
+                                    Maybe Later
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Left Sidebar: Artwork Gallery */}
             <div className="w-64 bg-white/50 border-r border-brand-brown/10 p-4 flex flex-col flex-shrink-0">
                 <h3 className="font-semibold text-sm text-brand-brown/50 mb-3 uppercase tracking-wider">Your Artwork</h3>
@@ -344,7 +385,7 @@ export function MemberStudio() {
                         <div className="h-full flex flex-col items-center justify-center text-slate-400">
                             <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 flex items-center justify-center text-2xl">🎨</div>
                             <p className="text-lg font-medium text-slate-600">No mockups yet</p>
-                            <p className="text-sm mt-1">Select an artwork and generate your first mockup.</p>
+                            <p className="text-sm mt-1">Select an artwork and create your first mockup.</p>
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -404,7 +445,7 @@ export function MemberStudio() {
             {/* Right Sidebar: Controls */}
             <div className="w-80 bg-white/50 border-l border-brand-brown/10 p-6 flex flex-col flex-shrink-0 overflow-y-auto">
                 <div className="mb-8">
-                    <h2 className="text-lg font-bold text-brand-brown mb-1 font-serif">Generate</h2>
+                    <h2 className="text-lg font-bold text-brand-brown mb-1 font-serif">Create</h2>
                     <p className="text-sm text-brand-brown/70">Create new mockups from your art.</p>
                 </div>
 
@@ -443,7 +484,7 @@ export function MemberStudio() {
                             onChange={(e) => setNumVariations(parseInt(e.target.value))}
                             className="w-full accent-brand-olive"
                         />
-                        <p className="text-xs text-brand-brown/40 mt-1">Generate multiple versions at once.</p>
+                        <p className="text-xs text-brand-brown/40 mt-1">Create multiple versions at once.</p>
                     </div>
 
                     {/* Aspect Ratio */}
@@ -478,16 +519,7 @@ export function MemberStudio() {
                 <div className="mt-8 pt-6 border-t border-brand-brown/10">
                     <div className="flex justify-between items-center mb-4">
                         <span className="text-sm font-medium text-brand-brown/70">Available Credits</span>
-                        <div className="flex items-center gap-2">
-                            <span className="text-lg font-bold text-brand-brown">{credits}</span>
-                            <button
-                                onClick={handleRefreshCredits}
-                                className="text-brand-brown/40 hover:text-brand-brown/70 p-1 rounded-full hover:bg-brand-sand/30 transition-colors"
-                                title="Refresh Credits"
-                            >
-                                ⟳
-                            </button>
-                        </div>
+                        <span className="text-lg font-bold text-brand-brown">{credits}</span>
                     </div>
 
                     <Button
@@ -500,7 +532,7 @@ export function MemberStudio() {
                                 <span className="animate-spin mr-2">⟳</span> Generating...
                             </>
                         ) : (
-                            `Generate (${numVariations} credit${numVariations > 1 ? 's' : ''})`
+                            `Create (${numVariations} credit${numVariations > 1 ? 's' : ''})`
                         )}
                     </Button>
 
@@ -508,26 +540,7 @@ export function MemberStudio() {
                         <p className="text-xs text-red-500 text-center mt-2">Not enough credits</p>
                     )}
 
-                    <div className="mt-8 pt-6 border-t border-slate-100">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="w-full text-red-500 hover:text-red-600 hover:bg-red-50"
-                            onClick={async () => {
-                                if (confirm("Are you sure you want to delete your account? This cannot be undone.")) {
-                                    try {
-                                        await user?.delete();
-                                        navigate("/");
-                                    } catch (error: any) {
-                                        console.error("Delete error:", error);
-                                        alert("Failed to delete account. You may need to log out and log in again.");
-                                    }
-                                }
-                            }}
-                        >
-                            Delete Account
-                        </Button>
-                    </div>
+
                 </div>
             </div>
         </div>

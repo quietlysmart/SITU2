@@ -1,4 +1,5 @@
 import { onRequest } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import "dotenv/config";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
@@ -19,6 +20,14 @@ admin.initializeApp({
 const db = admin.firestore();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
+
+// Admin verification helper
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "").split(",").map(e => e.trim().toLowerCase());
+
+function isAdmin(email: string | undefined): boolean {
+    if (!email) return false;
+    return ADMIN_EMAILS.includes(email.toLowerCase());
+}
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -132,9 +141,48 @@ app.post("/generateGuestMockups", async (req, res) => {
             return;
         }
 
+        // Rate limiting: Check IP for abuse (max 10 sessions per IP per day)
+        const clientIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+            req.ip ||
+            "unknown";
+
+        const rateLimitKey = `rate_limit_guest_${clientIp.replace(/\./g, "_")}`;
+        const rateLimitRef = db.collection("rate_limits").doc(rateLimitKey);
+        const rateLimitDoc = await rateLimitRef.get();
+
+        const now = Date.now();
+        const oneDayAgo = now - (24 * 60 * 60 * 1000);
+        const GUEST_SESSION_LIMIT = 10; // Max 10 guest sessions per IP per day
+
+        if (rateLimitDoc.exists) {
+            const data = rateLimitDoc.data()!;
+            const lastReset = data.lastReset?.toMillis?.() || 0;
+            const count = data.count || 0;
+
+            if (lastReset > oneDayAgo && count >= GUEST_SESSION_LIMIT) {
+                logger.warn(`[generateGuestMockups] Rate limit exceeded for IP: ${clientIp}`);
+                res.status(429).json({
+                    ok: false,
+                    error: "You've reached the daily limit for free mockups. Please try again tomorrow or sign up for a membership!"
+                });
+                return;
+            }
+
+            // Reset if more than a day has passed
+            if (lastReset <= oneDayAgo) {
+                await rateLimitRef.set({ count: 1, lastReset: FieldValue.serverTimestamp() });
+            } else {
+                await rateLimitRef.update({ count: FieldValue.increment(1) });
+            }
+        } else {
+            await rateLimitRef.set({ count: 1, lastReset: FieldValue.serverTimestamp() });
+        }
+
         // Create a session ID first
         const sessionRef = db.collection("guest_sessions").doc();
         const sessionId = sessionRef.id;
+
+        logger.info(`[generateGuestMockups] New guest session created: ${sessionId} from IP: ${clientIp}`);
 
         // If artworkUrl is a base64 Data URL, upload it to Storage first
         // to avoid hitting Firestore 1MB limit.
@@ -371,6 +419,225 @@ app.post("/createCheckoutSession", async (req, res) => {
     }
 });
 
+// Cancel subscription endpoint
+app.post("/cancelSubscription", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            res.status(401).json({ ok: false, error: "Unauthorized" });
+            return;
+        }
+        const idToken = authHeader.split("Bearer ")[1];
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const uid = decodedToken.uid;
+
+        const userDoc = await db.collection("users").doc(uid).get();
+        const userData = userDoc.data();
+
+        if (!userData?.stripeSubscriptionId) {
+            res.status(400).json({ ok: false, error: "No active subscription found" });
+            return;
+        }
+
+        // Cancel at period end (user keeps access until current period ends)
+        const subscription = await stripe.subscriptions.update(userData.stripeSubscriptionId, {
+            cancel_at_period_end: true
+        });
+
+        await db.collection("users").doc(uid).update({
+            subscriptionStatus: "canceling", // Will become "canceled" when webhook fires
+            cancelAtPeriodEnd: true
+        });
+
+        logger.info(`[cancelSubscription] User ${uid} scheduled subscription cancellation`);
+
+        res.json({
+            ok: true,
+            message: "Subscription will be canceled at the end of the current billing period",
+            cancelAt: subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null
+        });
+    } catch (error: any) {
+        logger.error("cancelSubscription error", error);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
+// Sync subscription status manually (workaround for local webhook issues)
+// This endpoint checks Stripe for the user's active subscription and updates Firebase
+app.post("/syncSubscription", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            res.status(401).json({ ok: false, error: "Unauthorized" });
+            return;
+        }
+        const idToken = authHeader.split("Bearer ")[1];
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const uid = decodedToken.uid;
+        const userEmail = decodedToken.email;
+
+        logger.info(`[syncSubscription] Syncing subscription for user ${uid} (${userEmail})`);
+
+        const userDoc = await db.collection("users").doc(uid).get();
+        const userData = userDoc.data();
+
+        // First, check if user has a stripeCustomerId
+        let customerId = userData?.stripeCustomerId;
+
+        // If no customer ID, try to find by email
+        if (!customerId && userEmail) {
+            const customers = await stripe.customers.list({ email: userEmail, limit: 1 });
+            if (customers.data.length > 0) {
+                customerId = customers.data[0].id;
+                // Save for future use
+                await db.collection("users").doc(uid).update({ stripeCustomerId: customerId });
+                logger.info(`[syncSubscription] Found customer by email: ${customerId}`);
+            }
+        }
+
+        if (!customerId) {
+            res.json({ ok: true, message: "No Stripe customer found. Not subscribed.", plan: "free" });
+            return;
+        }
+
+        // Get active subscriptions for this customer
+        const subscriptions = await stripe.subscriptions.list({
+            customer: customerId,
+            status: "all",
+            limit: 10
+        });
+
+        // Find an active or trialing subscription
+        const activeSubscription = subscriptions.data.find(
+            sub => sub.status === "active" || sub.status === "trialing"
+        );
+
+        if (!activeSubscription) {
+            logger.info(`[syncSubscription] No active subscription found for customer ${customerId}`);
+            res.json({ ok: true, message: "No active subscription found.", plan: "free" });
+            return;
+        }
+
+        // Determine plan from price ID
+        const priceId = activeSubscription.items.data[0].price.id;
+        let plan = "monthly";
+
+        if (priceId === process.env.STRIPE_PRICE_MONTHLY_ID) {
+            plan = "monthly";
+        } else if (priceId === process.env.STRIPE_PRICE_QUARTERLY_ID) {
+            plan = "quarterly";
+        } else if (priceId === process.env.STRIPE_PRICE_SIX_MONTHS_ID) {
+            plan = "sixMonths";
+        }
+
+        // Calculate credits reset date
+        const currentPeriodEnd = (activeSubscription as any).current_period_end;
+        const creditsResetAt = currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null;
+
+        // All subscription plans get 50 credits
+        const SUBSCRIPTION_CREDITS = 50;
+
+        // Update user document
+        await db.collection("users").doc(uid).update({
+            plan,
+            credits: SUBSCRIPTION_CREDITS,
+            creditsResetAt,
+            subscriptionStatus: activeSubscription.status,
+            stripeSubscriptionId: activeSubscription.id,
+            stripeCustomerId: customerId
+        });
+
+        logger.info(`[syncSubscription] Updated user ${uid}: plan=${plan}, credits=${SUBSCRIPTION_CREDITS}`);
+
+        res.json({
+            ok: true,
+            message: `Subscription synced! You now have ${SUBSCRIPTION_CREDITS} credits.`,
+            plan,
+            credits: SUBSCRIPTION_CREDITS,
+            creditsResetAt: creditsResetAt?.toISOString()
+        });
+    } catch (error: any) {
+        logger.error("syncSubscription error", error);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
+// Create credit top-up checkout session (one-time purchase)
+app.post("/createTopUpSession", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            res.status(401).json({ ok: false, error: "Unauthorized" });
+            return;
+        }
+        const idToken = authHeader.split("Bearer ")[1];
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const uid = decodedToken.uid;
+
+        const userDoc = await db.collection("users").doc(uid).get();
+        const userData = userDoc.data();
+
+        let customerId = userData?.stripeCustomerId;
+
+        if (!customerId) {
+            const customer = await stripe.customers.create({
+                email: decodedToken.email,
+                metadata: { firebaseUid: uid },
+            });
+            customerId = customer.id;
+            await db.collection("users").doc(uid).update({ stripeCustomerId: customerId });
+        }
+
+
+        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL || "http://localhost:5173/account";
+        const txnCancelUrl = process.env.STRIPE_CANCEL_URL || "http://localhost:5173/account";
+
+        // For top-ups, we use price_data (inline pricing) if no dedicated top-up price exists
+        // This creates a one-time $12 charge for 50 credits
+        const topUpPriceId = process.env.STRIPE_PRICE_TOPUP_ID;
+
+        let lineItems: any[];
+        if (topUpPriceId) {
+            // Use pre-configured one-time price if available
+            lineItems = [{ price: topUpPriceId, quantity: 1 }];
+        } else {
+            // Use inline price_data for one-time payment
+            lineItems = [{
+                price_data: {
+                    currency: "usd",
+                    product_data: {
+                        name: "Situ Credits Top-Up",
+                        description: "50 credits for mockup generation",
+                    },
+                    unit_amount: 1200, // $12.00 in cents
+                },
+                quantity: 1,
+            }];
+        }
+
+        const session = await stripe.checkout.sessions.create({
+            customer: customerId,
+            payment_method_types: ["card"],
+            line_items: lineItems,
+            mode: "payment", // One-time payment, not subscription
+            success_url: `${txnSuccessUrl}?topup=success`,
+            cancel_url: txnCancelUrl,
+            metadata: {
+                firebaseUid: uid,
+                type: "credit_topup",
+                credits: "50"
+            },
+        });
+
+        logger.info(`[createTopUpSession] Top-up session created for user ${uid}: ${session.id}`);
+
+        res.json({ ok: true, sessionId: session.id, url: session.url });
+    } catch (error: any) {
+        logger.error("createTopUpSession error", error);
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
 app.post("/claimGuestSession", async (req, res) => {
     try {
         const { sessionId } = req.body;
@@ -491,29 +758,110 @@ app.post("/stripeWebhook", express.raw({ type: "application/json" }), async (req
             const subscription = event.data.object as Stripe.Subscription;
             const customerId = subscription.customer as string;
 
-            const usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
+            logger.info(`[Webhook] Processing ${event.type} for customer: ${customerId}`);
+
+            let usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
+
+            // Fallback: If no user found by customerId, try to find by looking up the customer's metadata
+            if (usersSnapshot.empty) {
+                logger.warn(`[Webhook] No user found by stripeCustomerId: ${customerId}. Attempting customer metadata lookup.`);
+
+                try {
+                    const customer = await stripe.customers.retrieve(customerId);
+                    if (customer && !customer.deleted && (customer as Stripe.Customer).metadata?.firebaseUid) {
+                        const firebaseUid = (customer as Stripe.Customer).metadata.firebaseUid;
+                        logger.info(`[Webhook] Found firebaseUid in customer metadata: ${firebaseUid}`);
+
+                        const userDoc = await db.collection("users").doc(firebaseUid).get();
+                        if (userDoc.exists) {
+                            // Update the user with stripeCustomerId for future lookups
+                            await userDoc.ref.update({ stripeCustomerId: customerId });
+                            usersSnapshot = {
+                                empty: false,
+                                docs: [userDoc]
+                            } as any;
+                            logger.info(`[Webhook] Found user via metadata and updated stripeCustomerId`);
+                        }
+                    }
+                } catch (customerErr) {
+                    logger.error(`[Webhook] Failed to retrieve customer metadata`, customerErr);
+                }
+            }
 
             if (!usersSnapshot.empty) {
                 const userDoc = usersSnapshot.docs[0];
                 const priceId = subscription.items.data[0].price.id;
                 let plan = "monthly";
-                let creditsToAdd = 0;
 
-                if (priceId === process.env.STRIPE_PRICE_MONTHLY) {
+                // All subscription plans get 50 credits per billing period (non-rolling)
+                const SUBSCRIPTION_CREDITS = 50;
+
+                // Determine plan name from price ID
+                if (priceId === process.env.STRIPE_PRICE_MONTHLY_ID) {
                     plan = "monthly";
-                    creditsToAdd = 100;
-                } else if (priceId === process.env.STRIPE_PRICE_3MONTH) {
-                    plan = "3month";
-                    creditsToAdd = 300;
-                } else if (priceId === process.env.STRIPE_PRICE_6MONTH) {
-                    plan = "6month";
-                    creditsToAdd = 600;
+                } else if (priceId === process.env.STRIPE_PRICE_QUARTERLY_ID) {
+                    plan = "quarterly";
+                } else if (priceId === process.env.STRIPE_PRICE_SIX_MONTHS_ID) {
+                    plan = "sixMonths";
                 }
 
+                // Calculate next billing date for credit reset
+                const subscriptionData = subscription as any;
+                const currentPeriodEnd = subscriptionData.current_period_end;
+                const creditsResetAt = currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null;
+
+                // SET credits to 50 (not increment) - credits do NOT roll over
                 await userDoc.ref.update({
                     plan,
-                    credits: FieldValue.increment(creditsToAdd),
+                    credits: SUBSCRIPTION_CREDITS,
+                    creditsResetAt,
+                    subscriptionStatus: subscription.status,
+                    stripeSubscriptionId: subscription.id,
                 });
+
+                logger.info(`[Webhook] Updated user ${userDoc.id}: plan=${plan}, credits=${SUBSCRIPTION_CREDITS}, resetsAt=${creditsResetAt?.toISOString() || 'N/A'}`);
+            } else {
+                logger.error(`[Webhook] CRITICAL: No user found for customer ${customerId} - credits NOT updated!`);
+            }
+        }
+
+        // Handle subscription cancellation
+        if (event.type === "customer.subscription.deleted") {
+            const subscription = event.data.object as Stripe.Subscription;
+            const customerId = subscription.customer as string;
+
+            const usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
+
+            if (!usersSnapshot.empty) {
+                const userDoc = usersSnapshot.docs[0];
+                await userDoc.ref.update({
+                    plan: "free",
+                    subscriptionStatus: "canceled",
+                    stripeSubscriptionId: null,
+                    creditsResetAt: null,
+                    // Keep existing credits - they can use them until they run out
+                });
+
+                logger.info(`[Webhook] Subscription canceled for user ${userDoc.id}`);
+            }
+        }
+
+        // Handle one-time credit top-up purchases
+        if (event.type === "checkout.session.completed") {
+            const session = event.data.object as Stripe.Checkout.Session;
+
+            // Only handle top-up purchases (mode: payment, not subscription)
+            if (session.mode === "payment" && session.metadata?.type === "credit_topup") {
+                const uid = session.metadata.firebaseUid;
+                const creditsToAdd = parseInt(session.metadata.credits || "0");
+
+                if (uid && creditsToAdd > 0) {
+                    await db.collection("users").doc(uid).update({
+                        credits: FieldValue.increment(creditsToAdd)
+                    });
+
+                    logger.info(`[Webhook] Added ${creditsToAdd} credits to user ${uid} via top-up`);
+                }
             }
         }
 
@@ -663,54 +1011,314 @@ app.post("/generateMemberMockups", async (req, res) => {
     }
 });
 
-export const api = onRequest({ memory: "1GiB", timeoutSeconds: 300 }, app);
+// ============================================
+// ADMIN ENDPOINTS
+// ============================================
 
-// Temporary cleanup function
-app.post("/nukeEverything", async (req, res) => {
+// Admin middleware helper
+async function verifyAdmin(req: express.Request, res: express.Response): Promise<{ uid: string; email: string } | null> {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        res.status(401).json({ ok: false, error: "Unauthorized" });
+        return null;
+    }
     try {
-        const { confirmation } = req.body;
-        if (confirmation !== "I_AM_SURE_NUKE_DEV_DATA") {
-            res.status(400).json({ ok: false, error: "Invalid confirmation code" });
-            return;
+        const idToken = authHeader.split("Bearer ")[1];
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        if (!isAdmin(decodedToken.email)) {
+            logger.warn(`[Admin] Non-admin access attempt by ${decodedToken.email}`);
+            res.status(403).json({ ok: false, error: "Forbidden: Admin access required" });
+            return null;
+        }
+        return { uid: decodedToken.uid, email: decodedToken.email || "" };
+    } catch (err) {
+        res.status(401).json({ ok: false, error: "Invalid token" });
+        return null;
+    }
+}
+
+// GET /admin/stats - Dashboard metrics
+app.get("/admin/stats", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const now = new Date();
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+        // Get all users
+        const usersSnap = await db.collection("users").get();
+        const totalUsers = usersSnap.size;
+
+        let newUsersLast7Days = 0;
+        let totalCreditsGranted = 0;
+        let totalCreditsSpent = 0;
+
+        for (const doc of usersSnap.docs) {
+            const data = doc.data();
+            const createdAt = data.createdAt?.toDate?.();
+            if (createdAt && createdAt > sevenDaysAgo) {
+                newUsersLast7Days++;
+            }
+            // Track credits (approximation based on current balance and plan)
+            totalCreditsGranted += data.credits || 0;
         }
 
-        logger.warn("[NUKE] Starting database wipe...");
+        // Count mockups
+        let totalMockups = 0;
+        let mockupsLast7Days = 0;
 
-        // 1. Delete all users in Firestore and Auth
-        const usersSnap = await db.collection("users").get();
-        for (const doc of usersSnap.docs) {
-            const uid = doc.id;
-            // recursive delete subcollections usually requires tools, but we can try simple loop
-            const mockupsSnap = await db.collection("users").doc(uid).collection("mockups").get();
-            const artworksSnap = await db.collection("users").doc(uid).collection("artworks").get();
+        for (const userDoc of usersSnap.docs) {
+            const mockupsSnap = await db.collection("users").doc(userDoc.id).collection("mockups").get();
+            totalMockups += mockupsSnap.size;
 
-            const batch = db.batch();
-            mockupsSnap.docs.forEach(d => batch.delete(d.ref));
-            artworksSnap.docs.forEach(d => batch.delete(d.ref));
-            batch.delete(doc.ref);
-            await batch.commit();
-
-            try {
-                await admin.auth().deleteUser(uid);
-                logger.info(`[NUKE] Deleted user ${uid}`);
-            } catch (e) {
-                logger.error(`[NUKE] Failed to delete auth user ${uid}`, e);
+            for (const mockupDoc of mockupsSnap.docs) {
+                const createdAt = mockupDoc.data().createdAt?.toDate?.();
+                if (createdAt && createdAt > sevenDaysAgo) {
+                    mockupsLast7Days++;
+                }
             }
         }
 
-        // 2. Delete all Guest Sessions
-        const sessionsSnap = await db.collection("guest_sessions").get();
-        const batchSessions = db.batch();
-        sessionsSnap.docs.forEach(d => batchSessions.delete(d.ref));
-        await batchSessions.commit();
-        logger.info("[NUKE] Deleted guest sessions.");
-
-        res.json({ ok: true, message: "Nuked." });
+        res.json({
+            ok: true,
+            stats: {
+                totalUsers,
+                newUsersLast7Days,
+                totalMockups,
+                mockupsLast7Days,
+                totalCreditsGranted,
+                totalCreditsSpent // Would need tracking to calculate accurately
+            }
+        });
     } catch (error: any) {
-        logger.error("Nuke error", error);
-        res.status(500).json({ ok: false, error: error.message });
+        logger.error("[Admin] Stats error", error);
+        res.status(500).json({ ok: false, error: "Failed to fetch stats" });
     }
 });
+
+// GET /admin/users - Paginated user list
+app.get("/admin/users", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+        const offset = parseInt(req.query.offset as string) || 0;
+        const search = (req.query.search as string || "").toLowerCase();
+        const filter = req.query.filter as string; // "zero_credits", "subscribed"
+
+        let query: FirebaseFirestore.Query = db.collection("users");
+
+        // Get all users (for pagination with filters, we need to fetch more)
+        const snapshot = await query.get();
+        let users: any[] = [];
+
+        for (const doc of snapshot.docs) {
+            const data = doc.data();
+            const user: any = {
+                uid: doc.id,
+                email: data.email || "",
+                displayName: data.displayName || "",
+                plan: data.plan || "free",
+                credits: data.credits || 0,
+                createdAt: data.createdAt?.toDate?.()?.toISOString() || null,
+            };
+
+            // Get counts
+            const artworksSnap = await db.collection("users").doc(doc.id).collection("artworks").get();
+            const mockupsSnap = await db.collection("users").doc(doc.id).collection("mockups").get();
+            user.artworkCount = artworksSnap.size;
+            user.mockupCount = mockupsSnap.size;
+
+            // Apply search filter
+            if (search && !user.email.toLowerCase().includes(search) && !user.displayName.toLowerCase().includes(search)) {
+                continue;
+            }
+
+            // Apply status filters
+            if (filter === "zero_credits" && user.credits > 0) continue;
+            if (filter === "subscribed" && user.plan === "free") continue;
+
+            users.push(user);
+        }
+
+        // Sort by createdAt desc
+        users.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+        // Paginate
+        const total = users.length;
+        users = users.slice(offset, offset + limit);
+
+        res.json({ ok: true, users, total, limit, offset });
+    } catch (error: any) {
+        logger.error("[Admin] Users list error", error);
+        res.status(500).json({ ok: false, error: "Failed to fetch users" });
+    }
+});
+
+// GET /admin/users/:uid - User detail
+app.get("/admin/users/:uid", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const { uid } = req.params;
+        const userDoc = await db.collection("users").doc(uid).get();
+
+        if (!userDoc.exists) {
+            res.status(404).json({ ok: false, error: "User not found" });
+            return;
+        }
+
+        const userData = userDoc.data()!;
+
+        // Get artworks and mockups
+        const artworksSnap = await db.collection("users").doc(uid).collection("artworks").get();
+        const mockupsSnap = await db.collection("users").doc(uid).collection("mockups")
+            .orderBy("createdAt", "desc")
+            .limit(10)
+            .get();
+
+        const recentMockups = mockupsSnap.docs.map(d => ({
+            id: d.id,
+            url: d.data().url,
+            category: d.data().category,
+            createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null
+        }));
+
+        res.json({
+            ok: true,
+            user: {
+                uid,
+                email: userData.email || "",
+                displayName: userData.displayName || "",
+                plan: userData.plan || "free",
+                credits: userData.credits || 0,
+                createdAt: userData.createdAt?.toDate?.()?.toISOString() || null,
+                stripeCustomerId: userData.stripeCustomerId || null,
+                subscriptionStatus: userData.subscriptionStatus || null,
+                artworkCount: artworksSnap.size,
+                mockupCount: mockupsSnap.size,
+                recentMockups
+            }
+        });
+    } catch (error: any) {
+        logger.error("[Admin] User detail error", error);
+        res.status(500).json({ ok: false, error: "Failed to fetch user" });
+    }
+});
+
+// POST /admin/users/:uid/credits - Adjust credits
+app.post("/admin/users/:uid/credits", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const { uid } = req.params;
+        const { delta, reason } = req.body;
+
+        if (typeof delta !== "number" || !Number.isInteger(delta)) {
+            res.status(400).json({ ok: false, error: "Delta must be an integer" });
+            return;
+        }
+
+        if (!reason || typeof reason !== "string") {
+            res.status(400).json({ ok: false, error: "Reason is required" });
+            return;
+        }
+
+        const userRef = db.collection("users").doc(uid);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            res.status(404).json({ ok: false, error: "User not found" });
+            return;
+        }
+
+        const currentCredits = userDoc.data()?.credits || 0;
+        const newCredits = Math.max(0, currentCredits + delta); // Prevent negative credits
+
+        // Update credits atomically
+        await userRef.update({ credits: newCredits });
+
+        // Create audit log
+        await db.collection("creditAdjustments").add({
+            userId: uid,
+            delta,
+            reason,
+            previousCredits: currentCredits,
+            newCredits,
+            adminEmail: adminUser.email,
+            adminUid: adminUser.uid,
+            timestamp: FieldValue.serverTimestamp()
+        });
+
+        logger.info(`[Admin] Credit adjustment: ${adminUser.email} adjusted ${uid} by ${delta}. Reason: ${reason}`);
+
+        res.json({ ok: true, previousCredits: currentCredits, newCredits });
+    } catch (error: any) {
+        logger.error("[Admin] Credit adjustment error", error);
+        res.status(500).json({ ok: false, error: "Failed to adjust credits" });
+    }
+});
+
+// DELETE /admin/users/all - Delete all non-admin users (for testing)
+app.delete("/admin/users/all", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const usersSnap = await db.collection("users").get();
+        let deletedCount = 0;
+
+        for (const userDoc of usersSnap.docs) {
+            const userData = userDoc.data();
+            const userEmail = userData.email?.toLowerCase() || "";
+
+            // Skip admin users
+            if (isAdmin(userEmail)) {
+                logger.info(`[Admin] Skipping admin user: ${userEmail}`);
+                continue;
+            }
+
+            // Delete subcollections first
+            const artworksDocs = await db.collection("users").doc(userDoc.id).collection("artworks").get();
+            for (const art of artworksDocs.docs) {
+                await art.ref.delete();
+            }
+
+            const mockupsDocs = await db.collection("users").doc(userDoc.id).collection("mockups").get();
+            for (const mock of mockupsDocs.docs) {
+                await mock.ref.delete();
+            }
+
+            // Delete user document
+            await userDoc.ref.delete();
+
+            // Delete from Firebase Auth
+            try {
+                await admin.auth().deleteUser(userDoc.id);
+            } catch (authErr: any) {
+                logger.warn(`[Admin] Could not delete auth user ${userDoc.id}: ${authErr.message}`);
+            }
+
+            deletedCount++;
+        }
+
+        logger.info(`[Admin] Deleted ${deletedCount} non-admin users by ${adminUser.email}`);
+        res.json({ ok: true, deletedCount });
+    } catch (error: any) {
+        logger.error("[Admin] Delete all users error", error);
+        res.status(500).json({ ok: false, error: "Failed to delete users" });
+    }
+});
+
+export const api = onRequest({ memory: "1GiB", timeoutSeconds: 300 }, app);
+
+// NOTE: nukeEverything endpoint has been removed for production safety.
+// If you need to clear dev data, use Firebase Console or a separate admin script.
+
 // Firestore Notification Trigger for Welcome Email
 exports.onUserCreated = onDocumentCreated("users/{uid}", async (event) => {
     const snapshot = event.data;
@@ -727,5 +1335,64 @@ exports.onUserCreated = onDocumentCreated("users/{uid}", async (event) => {
         await emailService.sendWelcomeEmail(email, displayName);
     } else {
         logger.warn(`[onUserCreated] User ${event.params.uid} has no email.`);
+    }
+});
+
+// Scheduled function: Credit expiration enforcement
+// Runs daily at midnight UTC to reset credits for users whose billing period has ended
+export const creditExpirationCheck = onSchedule("every day 00:00", async () => {
+    logger.info("[creditExpirationCheck] Starting daily credit expiration check");
+
+    const now = new Date();
+
+    try {
+        // Find all users with creditsResetAt in the past and an active subscription
+        const usersSnapshot = await db.collection("users")
+            .where("creditsResetAt", "<=", now)
+            .where("subscriptionStatus", "in", ["active", "canceling"])
+            .get();
+
+        let resetCount = 0;
+
+        for (const userDoc of usersSnapshot.docs) {
+            const userData = userDoc.data();
+
+            // For users whose subscription is still active, their credits will be
+            // refreshed when Stripe sends the subscription.updated webhook at the start
+            // of their new billing period. This cron is mainly for:
+            // 1. Users whose subscription just ended (canceling -> canceled)
+            // 2. Cleanup for edge cases where webhook might have been missed
+
+            // If subscription is canceling and past reset date, mark as canceled
+            if (userData.subscriptionStatus === "canceling") {
+                await userDoc.ref.update({
+                    plan: "free",
+                    subscriptionStatus: "canceled",
+                    stripeSubscriptionId: null,
+                    creditsResetAt: null,
+                    cancelAtPeriodEnd: null
+                });
+                resetCount++;
+                logger.info(`[creditExpirationCheck] User ${userDoc.id} subscription expired, set to free`);
+            }
+        }
+
+        // Also clean up old rate limit entries (older than 7 days)
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const oldRateLimits = await db.collection("rate_limits")
+            .where("lastReset", "<", sevenDaysAgo)
+            .limit(500)
+            .get();
+
+        const batch = db.batch();
+        oldRateLimits.docs.forEach(doc => batch.delete(doc.ref));
+        if (oldRateLimits.size > 0) {
+            await batch.commit();
+            logger.info(`[creditExpirationCheck] Cleaned up ${oldRateLimits.size} old rate limit entries`);
+        }
+
+        logger.info(`[creditExpirationCheck] Completed. Processed ${usersSnapshot.size} users, reset ${resetCount}`);
+    } catch (error: any) {
+        logger.error("[creditExpirationCheck] Error during credit expiration check", error);
     }
 });

@@ -197,7 +197,7 @@ export function GuestStudio() {
                                                 <span className="ml-2 font-medium">Generating… please wait about a minute</span>
                                             </div>
                                         ) : (
-                                            "Generate Mockups"
+                                            "Create Mockups"
                                         )}
                                     </Button>
                                 </div>
@@ -215,7 +215,7 @@ export function GuestStudio() {
                                         <img src={result.url} alt={result.category} className="w-full h-full object-cover" />
                                     ) : (
                                         <div className="absolute inset-0 flex items-center justify-center text-red-500 text-sm p-4 text-center">
-                                            Failed to generate
+                                            Failed to create
                                         </div>
                                     )}
                                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-4">
@@ -263,7 +263,7 @@ export function GuestStudio() {
                                 <h3 className="text-xl font-bold mb-4 text-brand-brown font-serif">Want to create more mockups from any artwork?</h3>
 
                                 <p className="text-brand-brown/70 mb-6 text-sm">
-                                    Create a free Situ account to generate many more mockups with any design, on a wider range of products like wall art, prints, apparel, phone cases, mugs, tote bags, and more – in portrait, square, or landscape formats.
+                                    Create a free Situ account to create many more mockups with any design, on a wider range of products like wall art, prints, apparel, phone cases, mugs, tote bags, and more – in portrait, square, or landscape formats.
                                 </p>
 
                                 <div className="space-y-3">

@@ -1,9 +1,32 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // Helper function to check if user is admin (backend sets this)
+    function isAdmin() {
+      return request.auth != null && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+    
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // Allow read only for the owner
+      allow read: if request.auth != null && request.auth.uid == userId;
       
+      // Allow create only with correct initial values (12 credits, free plan)
+      allow create: if request.auth != null && 
+                       request.auth.uid == userId &&
+                       request.resource.data.credits == 12 &&
+                       request.resource.data.plan == 'free';
+      
+      // Allow update only if NOT modifying credits or plan (those are backend-only)
+      allow update: if request.auth != null && 
+                       request.auth.uid == userId &&
+                       !request.resource.data.diff(resource.data).affectedKeys().hasAny(['credits', 'plan', 'isAdmin']);
+      
+      // Never allow delete from client
+      allow delete: if false;
+      
+      // Subcollections - user owns their own data
       match /artworks/{artworkId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
@@ -13,9 +36,19 @@ service cloud.firestore {
       }
     }
     
+    // Guest sessions - backend only (no client access)
+    match /guest_sessions/{sessionId} {
+      allow read, write: if false;
+    }
+    
+    // Guest mockups - legacy, backend only
     match /guest_mockups/{mockupId} {
-      allow create: if true; // Allow guests to create
-      allow read: if false; // Only admin can read (via backend)
+      allow read, write: if false;
+    }
+    
+    // Credit adjustments - admin audit log, backend only
+    match /creditAdjustments/{adjustmentId} {
+      allow read, write: if false;
     }
   }
 }

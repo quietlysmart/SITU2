@@ -38,11 +38,130 @@ exports.editImage = editImage;
 const dotenv = __importStar(require("dotenv"));
 dotenv.config();
 const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
-const MODEL_ID = process.env.NANOBANANA_PRO_MODEL_ID || "nano-banana-pro-preview";
+/**
+ * GEMINI IMAGE MODEL CONFIGURATION
+ * ================================
+ * This is the single source of truth for the image generation model.
+ *
+ * Available models:
+ * - "gemini-2.5-flash-image" (cheaper, faster - CURRENT)
+ * - "gemini-3-pro-image-preview" (higher quality, more expensive)
+ *
+ * To switch models:
+ * 1. Set GEMINI_IMAGE_MODEL env var in functions/.env, OR
+ * 2. Change the default value below
+ *
+ * The env var takes precedence over the hardcoded default.
+ */
+const MODEL_ID = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 if (!GENAI_API_KEY) {
     console.warn("GOOGLE_GENAI_API_KEY is not set");
 }
 console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "Not Set" });
+/**
+ * Generate a minimal blank PNG at a specific aspect ratio.
+ * This is used to force Gemini 2.5 to output images at the target aspect ratio.
+ *
+ * We use small dimensions to keep the base64 size small, but the aspect ratio is exact.
+ */
+function generateBlankPNG(aspectRatio) {
+    // Define dimensions for each aspect ratio (keeping one dimension at 100-200px to minimize size)
+    const dimensions = {
+        "1:1": { width: 100, height: 100 },
+        "16:9": { width: 160, height: 90 },
+        "9:16": { width: 90, height: 160 },
+        "4:3": { width: 120, height: 90 },
+        "3:4": { width: 90, height: 120 },
+    };
+    const { width, height } = dimensions[aspectRatio] || dimensions["1:1"];
+    // Create a minimal valid PNG file
+    // PNG structure: signature + IHDR chunk + IDAT chunk (single transparent pixel repeated) + IEND chunk
+    // For simplicity, we create a tiny single-color PNG
+    // PNG signature
+    const signature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    // IHDR chunk (Image Header)
+    const ihdr = createIHDRChunk(width, height);
+    // IDAT chunk - raw deflated data for a white image
+    const idat = createIDATChunk(width, height);
+    // IEND chunk
+    const iend = createIENDChunk();
+    const png = Buffer.concat([signature, ihdr, idat, iend]);
+    console.log(`[NANOBANANA] Generated blank PNG: ${width}x${height} for aspect ratio ${aspectRatio}`);
+    return {
+        data: png.toString('base64'),
+        width,
+        height
+    };
+}
+// Helper: Create IHDR chunk
+function createIHDRChunk(width, height) {
+    const data = Buffer.alloc(13);
+    data.writeUInt32BE(width, 0);
+    data.writeUInt32BE(height, 4);
+    data.writeUInt8(8, 8); // bit depth
+    data.writeUInt8(2, 9); // color type (RGB)
+    data.writeUInt8(0, 10); // compression
+    data.writeUInt8(0, 11); // filter
+    data.writeUInt8(0, 12); // interlace
+    return createPNGChunk('IHDR', data);
+}
+// Helper: Create IDAT chunk with white pixels
+function createIDATChunk(width, height) {
+    const zlib = require('zlib');
+    // Each row has a filter byte (0) followed by RGB values (white = 255,255,255)
+    const rowSize = 1 + width * 3;
+    const rawData = Buffer.alloc(height * rowSize, 255);
+    // Set filter bytes to 0 at the start of each row
+    for (let y = 0; y < height; y++) {
+        rawData[y * rowSize] = 0;
+    }
+    const compressed = zlib.deflateSync(rawData);
+    return createPNGChunk('IDAT', compressed);
+}
+// Helper: Create IEND chunk
+function createIENDChunk() {
+    return createPNGChunk('IEND', Buffer.alloc(0));
+}
+// Helper: Create a PNG chunk with type and data
+function createPNGChunk(type, data) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const typeBuffer = Buffer.from(type, 'ascii');
+    const crcData = Buffer.concat([typeBuffer, data]);
+    const crc = crc32(crcData);
+    const crcBuffer = Buffer.alloc(4);
+    crcBuffer.writeUInt32BE(crc, 0);
+    return Buffer.concat([length, typeBuffer, data, crcBuffer]);
+}
+// CRC32 implementation for PNG chunks
+function crc32(data) {
+    let crc = 0xFFFFFFFF;
+    const table = getCRC32Table();
+    for (let i = 0; i < data.length; i++) {
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+// CRC32 lookup table
+let crc32Table = null;
+function getCRC32Table() {
+    if (crc32Table)
+        return crc32Table;
+    crc32Table = [];
+    for (let i = 0; i < 256; i++) {
+        let crc = i;
+        for (let j = 0; j < 8; j++) {
+            if (crc & 1) {
+                crc = 0xEDB88320 ^ (crc >>> 1);
+            }
+            else {
+                crc = crc >>> 1;
+            }
+        }
+        crc32Table[i] = crc >>> 0;
+    }
+    return crc32Table;
+}
 /**
  * CRITICAL INSTRUCTION: DO NOT MODIFY THIS FUNCTION'S CORE LOGIC.
  *
@@ -101,7 +220,8 @@ async function generateCategoryMockup(category, artworkUrl, customPrompt, aspect
         }
         // Generate prompt
         const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork. Clean, modern, high quality, photorealistic, studio lighting.`;
-        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "IMPORTANT: " + customPrompt : ""}`.trim();
+        // Build enhanced prompt that emphasizes aspect ratio
+        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "IMPORTANT: " + customPrompt : ""} The output image MUST match the exact aspect ratio specified.`.trim();
         console.log(`[NANOBANANA] Full prompt: ${prompt}`);
         // Fetch the artwork image
         const imageResp = await fetch(artworkUrl);
@@ -112,30 +232,57 @@ async function generateCategoryMockup(category, artworkUrl, customPrompt, aspect
         const imageBase64 = Buffer.from(imageBuffer).toString('base64');
         const mimeType = imageResp.headers.get("content-type") || "image/jpeg";
         console.log(`[NANOBANANA] Calling Gemini REST API with model: ${MODEL_ID}`);
-        // Use raw REST API to avoid local credential interference (invalid_grant)
-        // This ensures we ONLY use the API Key.
-        // Helper to make the request
-        const makeRequest = async (prefix) => {
+        console.log(`[NANOBANANA] Using aspect ratio in prompt: ${aspectRatio || "1:1"}`);
+        // Helper to make the request with retry logic
+        const makeRequestWithRetry = async (prefix, maxRetries = 3) => {
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${MODEL_ID}:generateContent?key=${GENAI_API_KEY}`;
-            return fetch(apiUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    contents: [{
-                            parts: [
-                                { text: prompt },
-                                { inline_data: { mime_type: mimeType, data: imageBase64 } }
-                            ]
-                        }]
-                })
-            });
+            let lastError;
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    console.log(`[NANOBANANA] API attempt ${attempt}/${maxRetries} with prefix '${prefix}'`);
+                    const requestBody = {
+                        contents: [{
+                                parts: [
+                                    { text: prompt },
+                                    { inline_data: { mime_type: mimeType, data: imageBase64 } }
+                                ]
+                            }]
+                    };
+                    const response = await fetch(apiUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(requestBody)
+                    });
+                    // Return immediately for success or client errors (4xx)
+                    if (response.ok || (response.status >= 400 && response.status < 500)) {
+                        return response;
+                    }
+                    // For server errors (5xx), retry with exponential backoff
+                    console.log(`[NANOBANANA] Server error ${response.status}, will retry...`);
+                    lastError = new Error(`Server error: ${response.status}`);
+                    if (attempt < maxRetries) {
+                        const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+                        console.log(`[NANOBANANA] Waiting ${delay}ms before retry...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+                catch (err) {
+                    console.log(`[NANOBANANA] Network error on attempt ${attempt}:`, err);
+                    lastError = err;
+                    if (attempt < maxRetries) {
+                        const delay = Math.pow(2, attempt) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+            }
+            throw lastError || new Error("Max retries exceeded");
         };
         // Try 'models/' endpoint first (standard models)
-        let response = await makeRequest("models");
+        let response = await makeRequestWithRetry("models");
         // If 404, it might be a tuned model, try 'tunedModels/'
         if (response.status === 404) {
             console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/'...`);
-            response = await makeRequest("tunedModels");
+            response = await makeRequestWithRetry("tunedModels");
         }
         if (!response.ok) {
             const errorText = await response.text();

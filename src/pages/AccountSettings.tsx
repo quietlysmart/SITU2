@@ -2,15 +2,23 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { updateProfile, updatePassword, updateEmail } from "firebase/auth";
 import { db } from "../lib/firebase";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, updateDoc, onSnapshot } from "firebase/firestore";
 import { Button } from "../components/ui/button";
+import { useSearchParams } from "react-router-dom";
 
 export function AccountSettings() {
     const { user } = useAuth();
+    const [searchParams] = useSearchParams();
     const [displayName, setDisplayName] = useState("");
     const [email, setEmail] = useState("");
     const [plan, setPlan] = useState("Free");
+    const [credits, setCredits] = useState(0);
+    const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
+    const [creditsResetAt, setCreditsResetAt] = useState<Date | null>(null);
     const [loading, setLoading] = useState(false);
+    const [canceling, setCanceling] = useState(false);
+    const [topUpLoading, setTopUpLoading] = useState(false);
+    const [syncing, setSyncing] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
     // Password State
@@ -21,25 +29,31 @@ export function AccountSettings() {
         if (user) {
             setDisplayName(user.displayName || "");
             setEmail(user.email || "");
-            loadUserProfile();
+
+            // Subscribe to user profile for real-time updates
+            const unsubscribe = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const planName = data.plan === "monthly" ? "Monthly Subscription" :
+                        data.plan === "quarterly" ? "Quarterly Subscription" :
+                            data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
+                    setPlan(planName);
+                    setCredits(data.credits || 0);
+                    setSubscriptionStatus(data.subscriptionStatus || null);
+                    setCreditsResetAt(data.creditsResetAt?.toDate?.() || null);
+                }
+            });
+
+            return () => unsubscribe();
         }
     }, [user]);
 
-    const loadUserProfile = async () => {
-        if (!user) return;
-        try {
-            const userDoc = await getDoc(doc(db, "users", user.uid));
-            if (userDoc.exists()) {
-                const data = userDoc.data();
-                const planName = data.plan === "monthly" ? "Monthly Subscription" :
-                    data.plan === "quarterly" ? "Quarterly Subscription" :
-                        data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
-                setPlan(planName);
-            }
-        } catch (error) {
-            console.error("Error loading profile:", error);
+    // Check for top-up success message
+    useEffect(() => {
+        if (searchParams.get("topup") === "success") {
+            setMessage({ type: "success", text: "Credits added successfully! Your balance has been updated." });
         }
-    };
+    }, [searchParams]);
 
     const handleUpdateProfile = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -96,6 +110,115 @@ export function AccountSettings() {
         }
     };
 
+    const handleCancelSubscription = async () => {
+        if (!user) return;
+
+        const confirmed = window.confirm(
+            "Are you sure you want to cancel your subscription? You'll keep access until the end of your current billing period."
+        );
+
+        if (!confirmed) return;
+
+        setCanceling(true);
+        setMessage(null);
+
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/cancelSubscription`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to cancel subscription");
+            }
+
+            setMessage({
+                type: "success",
+                text: "Subscription canceled. You'll keep access until the end of your billing period."
+            });
+        } catch (error: any) {
+            console.error("Cancel subscription error:", error);
+            setMessage({ type: "error", text: error.message });
+        } finally {
+            setCanceling(false);
+        }
+    };
+
+    const handleSyncSubscription = async () => {
+        if (!user) return;
+
+        setSyncing(true);
+        setMessage(null);
+
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/syncSubscription`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to sync subscription");
+            }
+
+            setMessage({
+                type: "success",
+                text: data.message || "Subscription synced successfully!"
+            });
+        } catch (error: any) {
+            console.error("Sync subscription error:", error);
+            setMessage({ type: "error", text: error.message });
+        } finally {
+            setSyncing(false);
+        }
+    };
+
+    const handleTopUp = async () => {
+        if (!user) return;
+
+        setTopUpLoading(true);
+        setMessage(null);
+
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createTopUpSession`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to create top-up session");
+            }
+
+            // Redirect to Stripe checkout
+            if (data.url) {
+                window.location.href = data.url;
+            }
+        } catch (error: any) {
+            console.error("Top-up error:", error);
+            setMessage({ type: "error", text: error.message });
+            setTopUpLoading(false);
+        }
+    };
+
+    const isSubscribed = plan !== "Free Plan" && subscriptionStatus && subscriptionStatus !== "canceled";
+
     return (
         <div className="container mx-auto px-4 py-12 max-w-2xl">
             <h1 className="text-3xl font-bold font-serif text-brand-brown mb-8">Account Settings</h1>
@@ -105,6 +228,72 @@ export function AccountSettings() {
                     {message.text}
                 </div>
             )}
+
+            {/* Credits & Subscription Section */}
+            <div className="bg-white/50 backdrop-blur-sm p-8 rounded-3xl border border-brand-brown/10 mb-8">
+                <h2 className="text-xl font-bold text-brand-brown mb-4">Credits & Subscription</h2>
+
+                <div className="space-y-4">
+                    {/* Credits Display */}
+                    <div className="flex items-center justify-between p-4 bg-brand-sand/30 rounded-lg">
+                        <div>
+                            <div className="text-sm text-brand-brown/70">Available Credits</div>
+                            <div className="text-3xl font-bold text-brand-brown">{credits}</div>
+                        </div>
+                        <Button onClick={handleTopUp} disabled={topUpLoading}>
+                            {topUpLoading ? "Loading..." : "Buy 50 Credits - $12"}
+                        </Button>
+                    </div>
+
+                    {/* Plan & Status */}
+                    <div className="flex items-center justify-between p-4 bg-brand-sand/20 rounded-lg">
+                        <div>
+                            <div className="text-sm text-brand-brown/70">Current Plan</div>
+                            <div className="font-medium text-brand-brown">{plan}</div>
+                            {subscriptionStatus === "canceling" && (
+                                <div className="text-xs text-amber-600 mt-1">
+                                    Cancels at end of period
+                                </div>
+                            )}
+                            {creditsResetAt && isSubscribed && (
+                                <div className="text-xs text-brand-brown/50 mt-1">
+                                    Credits reset: {creditsResetAt.toLocaleDateString()}
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                            {plan === "Free Plan" ? (
+                                <Button
+                                    variant="default"
+                                    onClick={() => window.location.href = "/pricing?from=account"}
+                                >
+                                    Upgrade
+                                </Button>
+                            ) : (
+                                <>
+                                    {subscriptionStatus !== "canceling" && subscriptionStatus !== "canceled" && (
+                                        <Button
+                                            variant="outline"
+                                            onClick={handleCancelSubscription}
+                                            disabled={canceling}
+                                            className="text-red-600 border-red-200 hover:bg-red-50"
+                                        >
+                                            {canceling ? "Canceling..." : "Cancel Subscription"}
+                                        </Button>
+                                    )}
+                                </>
+                            )}
+                            <Button
+                                variant="outline"
+                                onClick={handleSyncSubscription}
+                                disabled={syncing}
+                            >
+                                {syncing ? "Syncing..." : "🔄 Sync Subscription"}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <div className="bg-white/50 backdrop-blur-sm p-8 rounded-3xl border border-brand-brown/10 mb-8">
                 <h2 className="text-xl font-bold text-brand-brown mb-4">Profile Information</h2>
@@ -126,24 +315,6 @@ export function AccountSettings() {
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full px-4 py-2 rounded-lg border border-brand-brown/20 focus:outline-none focus:ring-2 focus:ring-brand-brown bg-white"
                         />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-brand-brown/70 mb-1">Current Plan</label>
-                        <div className="flex items-center justify-between bg-brand-sand/30 p-2 rounded-lg">
-                            <div className="text-brand-brown font-medium px-2">
-                                {plan}
-                            </div>
-                            {plan === "Free Plan" && (
-                                <Button
-                                    type="button"
-                                    variant="default"
-                                    size="sm"
-                                    onClick={() => window.location.href = "/pricing?from=account"}
-                                >
-                                    Upgrade
-                                </Button>
-                            )}
-                        </div>
                     </div>
                     <Button type="submit" disabled={loading}>
                         {loading ? "Saving..." : "Save Changes"}
@@ -176,6 +347,35 @@ export function AccountSettings() {
                         {loading ? "Updating..." : "Update Password"}
                     </Button>
                 </form>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="bg-red-50 p-8 rounded-3xl border border-red-200">
+                <h2 className="text-xl font-bold text-red-700 mb-2">⚠️ Danger Zone</h2>
+                <p className="text-sm text-red-600 mb-4">
+                    Deleting your account is permanent and cannot be undone. All your data will be lost.
+                </p>
+                <Button
+                    variant="destructive"
+                    onClick={async () => {
+                        if (!user) return;
+                        const confirmed = window.confirm(
+                            "Are you sure you want to delete your account? This cannot be undone."
+                        );
+                        if (!confirmed) return;
+
+                        try {
+                            await user.delete();
+                            window.location.href = "/";
+                        } catch (error: any) {
+                            console.error("Delete error:", error);
+                            alert("Failed to delete account. You may need to log out and log in again.");
+                        }
+                    }}
+                    className="bg-red-600 hover:bg-red-700"
+                >
+                    Delete Account
+                </Button>
             </div>
         </div>
     );
