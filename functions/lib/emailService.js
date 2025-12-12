@@ -42,10 +42,7 @@ const senderName = process.env.BREVO_SENDER_NAME || "Situ App";
 exports.emailService = {
     async sendGuestMockups(params) {
         if (!apiKey) {
-            console.warn("BREVO_API_KEY is not set. Logging email instead.");
-            console.log(`[Email Mock] To: ${params.email}, Subject: Your Situ Mockups`);
-            console.log(`[Email Mock] Body: Download your mockups here: ${params.mockupUrls.join(", ")}`);
-            return;
+            throw new Error("Email service unavailable: BREVO_API_KEY not set");
         }
         console.log(`[Email] Sending mockups to ${params.email} (${params.mockupUrls.length} files) via Brevo.`);
         const htmlContent = `
@@ -128,9 +125,7 @@ exports.emailService = {
     },
     async sendWelcomeEmail(email, displayName) {
         if (!apiKey) {
-            console.warn("BREVO_API_KEY is not set. Logging welcome email instead.");
-            console.log(`[Email Mock] To: ${email}, Subject: Welcome to Situ`);
-            return;
+            throw new Error("Email service unavailable: BREVO_API_KEY not set");
         }
         console.log(`[Email] Sending welcome email to ${email}`);
         const nameGreeting = displayName ? `Hi ${displayName},` : "Hi there,";

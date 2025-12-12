@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.generateBlankPNG = generateBlankPNG;
 exports.generateCategoryMockup = generateCategoryMockup;
 exports.editImage = editImage;
 const dotenv = __importStar(require("dotenv"));
@@ -184,6 +185,9 @@ async function generateCategoryMockup(category, artworkUrl, customPrompt, aspect
     try {
         console.log(`[NANOBANANA] Starting generation for ${category}`);
         console.log(`[NANOBANANA] Artwork URL: ${artworkUrl}`);
+        if (!artworkUrl.startsWith("https://")) {
+            throw new Error("Artwork URL must be https and pre-validated");
+        }
         // Product Prompts Configuration
         const PRODUCT_PROMPTS = {
             "wall": "Ultra-realistic interior design photo of framed wall art in a stylish, modern room. Dramatic natural lighting casting soft shadows. The provided artwork is the focal point, framed elegantly on the wall. High-end furniture and decor in the background, cinematic composition.",

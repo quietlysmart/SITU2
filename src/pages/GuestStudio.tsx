@@ -97,18 +97,20 @@ export function GuestStudio() {
 
     const handleSendEmail = async () => {
         if (!email || !results?.results) return;
+        if (!results.sessionId) {
+            setEmailError("Missing session ID. Please generate mockups again.");
+            return;
+        }
 
         setIsSending(true);
         setEmailError(null);
         try {
-            const mockupUrls = results.results.map(r => r.url).filter(u => u !== null) as string[];
             const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     email,
-                    sessionId: results.sessionId,
-                    mockupUrls // Fallback
+                    sessionId: results.sessionId
                 }),
             });
 

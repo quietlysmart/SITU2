@@ -33,7 +33,7 @@ console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "N
  * 
  * We use small dimensions to keep the base64 size small, but the aspect ratio is exact.
  */
-function generateBlankPNG(aspectRatio: string): { data: string; width: number; height: number } {
+export function generateBlankPNG(aspectRatio: string): { data: string; width: number; height: number } {
     // Define dimensions for each aspect ratio (keeping one dimension at 100-200px to minimize size)
     const dimensions: Record<string, { width: number; height: number }> = {
         "1:1": { width: 100, height: 100 },
@@ -182,6 +182,9 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
     try {
         console.log(`[NANOBANANA] Starting generation for ${category}`);
         console.log(`[NANOBANANA] Artwork URL: ${artworkUrl}`);
+        if (!artworkUrl.startsWith("https://")) {
+            throw new Error("Artwork URL must be https and pre-validated");
+        }
 
         // Product Prompts Configuration
         const PRODUCT_PROMPTS: Record<string, string> = {

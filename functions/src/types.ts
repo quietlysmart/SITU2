@@ -19,8 +19,7 @@ export interface GuestMockupResponse {
 
 export interface SendGuestMockupsRequest {
     email: string;
-    sessionId?: string;
-    mockupUrls?: string[]; // Kept for backward compat if needed, but sessionId is preferred
+    sessionId: string;
 }
 
 export interface MemberMockupRequest {

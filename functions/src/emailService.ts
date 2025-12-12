@@ -14,10 +14,7 @@ interface SendGuestMockupsParams {
 export const emailService = {
     async sendGuestMockups(params: SendGuestMockupsParams): Promise<void> {
         if (!apiKey) {
-            console.warn("BREVO_API_KEY is not set. Logging email instead.");
-            console.log(`[Email Mock] To: ${params.email}, Subject: Your Situ Mockups`);
-            console.log(`[Email Mock] Body: Download your mockups here: ${params.mockupUrls.join(", ")}`);
-            return;
+            throw new Error("Email service unavailable: BREVO_API_KEY not set");
         }
 
         console.log(`[Email] Sending mockups to ${params.email} (${params.mockupUrls.length} files) via Brevo.`);
@@ -105,9 +102,7 @@ export const emailService = {
 
     async sendWelcomeEmail(email: string, displayName?: string): Promise<void> {
         if (!apiKey) {
-            console.warn("BREVO_API_KEY is not set. Logging welcome email instead.");
-            console.log(`[Email Mock] To: ${email}, Subject: Welcome to Situ`);
-            return;
+            throw new Error("Email service unavailable: BREVO_API_KEY not set");
         }
 
         console.log(`[Email] Sending welcome email to ${email}`);
@@ -180,4 +175,3 @@ export const emailService = {
         }
     }
 };
-

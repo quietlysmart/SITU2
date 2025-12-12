@@ -12,16 +12,18 @@ service cloud.firestore {
       // Allow read only for the owner
       allow read: if request.auth != null && request.auth.uid == userId;
       
-      // Allow create only with correct initial values (12 credits, free plan)
+      // Allow create only with strict initial values (12 credits, free plan) and limited fields
       allow create: if request.auth != null && 
                        request.auth.uid == userId &&
                        request.resource.data.credits == 12 &&
-                       request.resource.data.plan == 'free';
+                       request.resource.data.plan == 'free' &&
+                       !request.resource.data.isAdmin &&
+                       request.resource.data.keys().hasOnly(['email', 'displayName', 'createdAt', 'plan', 'credits', 'promo']);
       
-      // Allow update only if NOT modifying credits or plan (those are backend-only)
+      // Allow update only for profile fields (displayName/email). All billing/admin fields are backend-only.
       allow update: if request.auth != null && 
                        request.auth.uid == userId &&
-                       !request.resource.data.diff(resource.data).affectedKeys().hasAny(['credits', 'plan', 'isAdmin']);
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email']);
       
       // Never allow delete from client
       allow delete: if false;

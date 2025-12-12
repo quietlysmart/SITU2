@@ -55,6 +55,17 @@ admin.initializeApp({
     storageBucket: "situ-477910.firebasestorage.app"
 });
 const db = admin.firestore();
+const bucket = admin.storage().bucket();
+const STORAGE_BUCKET_NAME = bucket.name.toLowerCase();
+const ALLOWED_IMAGE_HOSTS = new Set([
+    "firebasestorage.googleapis.com",
+    "storage.googleapis.com",
+    STORAGE_BUCKET_NAME,
+    ...(process.env.ALLOWED_IMAGE_HOSTS || "")
+        .split(",")
+        .map(h => h.trim().toLowerCase())
+        .filter(Boolean),
+]);
 const stripe = new stripe_1.default(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
 // Admin verification helper
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "").split(",").map(e => e.trim().toLowerCase());
@@ -64,8 +75,38 @@ function isAdmin(email) {
     return ADMIN_EMAILS.includes(email.toLowerCase());
 }
 const app = (0, express_1.default)();
+// Do not trust X-Forwarded-For; use connection IPs for rate limiting.
+app.set("trust proxy", false);
 app.use((0, cors_1.default)({ origin: true }));
 app.use(express_1.default.json({ limit: '10mb' }));
+function getClientIp(req) {
+    return (req.ip || req.socket.remoteAddress || "unknown").replace(/[^a-zA-Z0-9:._-]/g, "_");
+}
+function isAllowedImageUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:")
+            return false;
+        const host = parsed.hostname.toLowerCase();
+        if (!ALLOWED_IMAGE_HOSTS.has(host))
+            return false;
+        // If using shared hosts, ensure the path references our bucket
+        if (host === "firebasestorage.googleapis.com") {
+            return parsed.pathname.includes(`/v0/b/${STORAGE_BUCKET_NAME}/`);
+        }
+        if (host === "storage.googleapis.com") {
+            return parsed.pathname.startsWith(`/${STORAGE_BUCKET_NAME}/`);
+        }
+        // Direct bucket domain (e.g., <bucket>.firebasestorage.app)
+        return true;
+    }
+    catch (_a) {
+        return false;
+    }
+}
+function isDataUrl(value) {
+    return value.startsWith("data:");
+}
 app.post("/editMockup", async (req, res) => {
     var _a, _b;
     try {
@@ -94,6 +135,10 @@ app.post("/editMockup", async (req, res) => {
             return;
         }
         const mockupUrl = (_b = mockupDoc.data()) === null || _b === void 0 ? void 0 : _b.url;
+        if (!mockupUrl || !isAllowedImageUrl(mockupUrl)) {
+            res.status(400).json({ ok: false, error: "Invalid mockup source URL" });
+            return;
+        }
         // Fetch image
         const imageRes = await fetch(mockupUrl);
         const arrayBuffer = await imageRes.arrayBuffer();
@@ -151,17 +196,19 @@ async function uploadDataUrl(dataUrl, path) {
     return url;
 }
 app.post("/generateGuestMockups", async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b;
     try {
         let { artworkUrl } = req.body;
         if (!artworkUrl) {
             res.status(400).json({ ok: false, error: "Missing artworkUrl" });
             return;
         }
+        if (!isDataUrl(artworkUrl) && !isAllowedImageUrl(artworkUrl)) {
+            res.status(400).json({ ok: false, error: "Invalid artwork URL. Upload the image directly." });
+            return;
+        }
         // Rate limiting: Check IP for abuse (max 10 sessions per IP per day)
-        const clientIp = ((_b = (_a = req.headers["x-forwarded-for"]) === null || _a === void 0 ? void 0 : _a.split(",")[0]) === null || _b === void 0 ? void 0 : _b.trim()) ||
-            req.ip ||
-            "unknown";
+        const clientIp = getClientIp(req);
         const rateLimitKey = `rate_limit_guest_${clientIp.replace(/\./g, "_")}`;
         const rateLimitRef = db.collection("rate_limits").doc(rateLimitKey);
         const rateLimitDoc = await rateLimitRef.get();
@@ -170,7 +217,7 @@ app.post("/generateGuestMockups", async (req, res) => {
         const GUEST_SESSION_LIMIT = 10; // Max 10 guest sessions per IP per day
         if (rateLimitDoc.exists) {
             const data = rateLimitDoc.data();
-            const lastReset = ((_d = (_c = data.lastReset) === null || _c === void 0 ? void 0 : _c.toMillis) === null || _d === void 0 ? void 0 : _d.call(_c)) || 0;
+            const lastReset = ((_b = (_a = data.lastReset) === null || _a === void 0 ? void 0 : _a.toMillis) === null || _b === void 0 ? void 0 : _b.call(_a)) || 0;
             const count = data.count || 0;
             if (lastReset > oneDayAgo && count >= GUEST_SESSION_LIMIT) {
                 logger.warn(`[generateGuestMockups] Rate limit exceeded for IP: ${clientIp}`);
@@ -275,56 +322,68 @@ app.post("/generateGuestMockups", async (req, res) => {
     }
 });
 app.post("/sendGuestMockups", async (req, res) => {
-    var _a;
+    var _a, _b;
     try {
-        const { email, mockupUrls, sessionId } = req.body;
+        const { email, sessionId } = req.body;
         if (!email) {
             res.status(400).json({ ok: false, error: "Missing email" });
             return;
         }
-        let urlsToSend = [];
-        if (sessionId) {
-            // Upstream preferred way: update the existing session
-            await db.collection("guest_sessions").doc(sessionId).update({
-                email,
-                status: "pending_email",
-                emailRequestsAt: firestore_2.FieldValue.serverTimestamp()
-            });
-            const sessionDoc = await db.collection("guest_sessions").doc(sessionId).get();
-            const sessionData = sessionDoc.data();
-            urlsToSend = ((_a = sessionData === null || sessionData === void 0 ? void 0 : sessionData.results) === null || _a === void 0 ? void 0 : _a.map((r) => r.url)) || [];
-        }
-        else if (mockupUrls && mockupUrls.length > 0) {
-            // Legacy way (or fallback)
-            urlsToSend = mockupUrls;
-            // Also store for analytics if needed
-            await db.collection("guest_mockups").add({
-                email,
-                mockupUrls,
-                createdAt: firestore_2.FieldValue.serverTimestamp(),
-                status: "sent_email"
-            });
-        }
-        else {
-            res.status(400).json({ ok: false, error: "Missing sessionId or mockupUrls" });
+        if (!sessionId) {
+            res.status(400).json({ ok: false, error: "Missing sessionId" });
             return;
         }
+        const clientIp = getClientIp(req);
+        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const emailRateLimitKey = `rate_limit_email_${clientIp}_${today}`;
+        const emailRateLimitRef = db.collection("rate_limits").doc(emailRateLimitKey);
+        const emailRateLimitDoc = await emailRateLimitRef.get();
+        const EMAIL_PER_DAY_LIMIT = 5;
+        if (emailRateLimitDoc.exists && (((_a = emailRateLimitDoc.data()) === null || _a === void 0 ? void 0 : _a.count) || 0) >= EMAIL_PER_DAY_LIMIT) {
+            res.status(429).json({ ok: false, error: "Too many email requests from this IP today. Please try again tomorrow." });
+            return;
+        }
+        const sessionRef = db.collection("guest_sessions").doc(sessionId);
+        const sessionDoc = await sessionRef.get();
+        if (!sessionDoc.exists) {
+            res.status(404).json({ ok: false, error: "Guest session not found" });
+            return;
+        }
+        const sessionData = sessionDoc.data();
+        if ((sessionData === null || sessionData === void 0 ? void 0 : sessionData.status) === "email_sent") {
+            res.status(400).json({ ok: false, error: "Email already sent for this session." });
+            return;
+        }
+        if ((sessionData === null || sessionData === void 0 ? void 0 : sessionData.email) && sessionData.email.toLowerCase() !== email.toLowerCase()) {
+            res.status(403).json({ ok: false, error: "Email mismatch for this session." });
+            return;
+        }
+        const urlsToSend = ((_b = sessionData === null || sessionData === void 0 ? void 0 : sessionData.results) === null || _b === void 0 ? void 0 : _b.map((r) => r.url).filter(Boolean)) || [];
         if (urlsToSend.length === 0) {
             res.status(400).json({ ok: false, error: "No mockups to send." });
             return;
         }
-        // Call Email Service
+        // Update rate limit counter
+        if (emailRateLimitDoc.exists) {
+            await emailRateLimitRef.update({ count: firestore_2.FieldValue.increment(1) });
+        }
+        else {
+            await emailRateLimitRef.set({ count: 1, lastReset: firestore_2.FieldValue.serverTimestamp() });
+        }
+        // Mark pending and send
+        await sessionRef.update({
+            email,
+            status: "pending_email",
+            emailRequestsAt: firestore_2.FieldValue.serverTimestamp()
+        });
         await emailService_1.emailService.sendGuestMockups({
             email,
             mockupUrls: urlsToSend
         });
-        // Update status if session exists
-        if (sessionId) {
-            await db.collection("guest_sessions").doc(sessionId).update({
-                status: "email_sent",
-                emailSentAt: firestore_2.FieldValue.serverTimestamp()
-            });
-        }
+        await sessionRef.update({
+            status: "email_sent",
+            emailSentAt: firestore_2.FieldValue.serverTimestamp()
+        });
         res.json({ ok: true });
     }
     catch (error) {
@@ -334,7 +393,7 @@ app.post("/sendGuestMockups", async (req, res) => {
 });
 app.post("/createCheckoutSession", async (req, res) => {
     try {
-        const { plan, successUrl, cancelUrl } = req.body;
+        const { plan } = req.body;
         logger.info(`[createCheckoutSession] Request received for plan: ${plan}`);
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -385,9 +444,13 @@ app.post("/createCheckoutSession", async (req, res) => {
             customerId = customer.id;
             await db.collection("users").doc(uid).update({ stripeCustomerId: customerId });
         }
-        // Use Env vars for URLs, with fallback to request body for flexibility (though plan implies strict env usage)
-        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL || successUrl || "http://localhost:5174/member/studio";
-        const txnCancelUrl = process.env.STRIPE_CANCEL_URL || cancelUrl || "http://localhost:5174/pricing";
+        // Use Env vars for URLs only (no client-provided overrides)
+        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL;
+        const txnCancelUrl = process.env.STRIPE_CANCEL_URL;
+        if (!txnSuccessUrl || !txnCancelUrl) {
+            res.status(500).json({ ok: false, error: "Server configuration error: Stripe redirect URLs missing" });
+            return;
+        }
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
             payment_method_types: ["card"],
@@ -549,8 +612,12 @@ app.post("/createTopUpSession", async (req, res) => {
             customerId = customer.id;
             await db.collection("users").doc(uid).update({ stripeCustomerId: customerId });
         }
-        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL || "http://localhost:5173/account";
-        const txnCancelUrl = process.env.STRIPE_CANCEL_URL || "http://localhost:5173/account";
+        const txnSuccessUrl = process.env.STRIPE_SUCCESS_URL;
+        const txnCancelUrl = process.env.STRIPE_CANCEL_URL;
+        if (!txnSuccessUrl || !txnCancelUrl) {
+            res.status(500).json({ ok: false, error: "Server configuration error: Stripe redirect URLs missing" });
+            return;
+        }
         // For top-ups, we use price_data (inline pricing) if no dedicated top-up price exists
         // This creates a one-time $12 charge for 50 credits
         const topUpPriceId = process.env.STRIPE_PRICE_TOPUP_ID;
@@ -838,6 +905,14 @@ app.post("/generateMemberMockups", async (req, res) => {
         }
         // Get artwork URL
         let artworkUrl = providedArtworkUrl;
+        if (artworkUrl && isDataUrl(artworkUrl)) {
+            const storagePath = `users/${uid}/uploads/${Date.now()}_artwork.png`;
+            artworkUrl = await uploadDataUrl(artworkUrl, storagePath);
+        }
+        else if (artworkUrl && !isAllowedImageUrl(artworkUrl)) {
+            res.status(400).json({ ok: false, error: "Invalid artwork URL" });
+            return;
+        }
         if (!artworkUrl) {
             try {
                 console.log(`[MEMBER] Fetching artwork ${artworkId}`);
@@ -858,6 +933,10 @@ app.post("/generateMemberMockups", async (req, res) => {
         }
         else {
             console.log(`[MEMBER] Using provided artwork URL`);
+        }
+        if (!artworkUrl || !isAllowedImageUrl(artworkUrl)) {
+            res.status(400).json({ ok: false, error: "Artwork URL is not allowed" });
+            return;
         }
         const results = [];
         const errors = [];
