@@ -2,6 +2,9 @@ import { Link, Outlet, useLocation, Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useEffect, useState } from "react";
 
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../../lib/firebase";
+
 // Admin email check (client-side for UI protection - backend is the true gatekeeper)
 const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAILS || "").split(",").map((e: string) => e.trim().toLowerCase());
 
@@ -11,11 +14,35 @@ export function AdminLayout() {
     const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
     useEffect(() => {
-        if (user) {
-            setIsAdmin(ADMIN_EMAILS.includes(user.email?.toLowerCase() || ""));
-        } else if (!loading) {
-            setIsAdmin(false);
-        }
+        const checkAdminStatus = async () => {
+            if (!user) {
+                if (!loading) setIsAdmin(false);
+                return;
+            }
+
+            // 1. Check Env Vars (Fast)
+            const isEnvAdmin = ADMIN_EMAILS.includes(user.email?.toLowerCase() || "");
+            if (isEnvAdmin) {
+                setIsAdmin(true);
+                return;
+            }
+
+            // 2. Check Firestore (Robust)
+            try {
+                const userRef = doc(db, "users", user.uid);
+                const userSnap = await getDoc(userRef);
+                if (userSnap.exists() && userSnap.data().isAdmin === true) {
+                    setIsAdmin(true);
+                } else {
+                    setIsAdmin(false);
+                }
+            } catch (err) {
+                console.error("Failed to check admin status:", err);
+                setIsAdmin(false);
+            }
+        };
+
+        checkAdminStatus();
     }, [user, loading]);
 
     if (loading || isAdmin === null) {
@@ -26,8 +53,32 @@ export function AdminLayout() {
         );
     }
 
-    if (!user || !isAdmin) {
+    if (!user) {
         return <Navigate to="/login" replace />;
+    }
+
+    if (!isAdmin) {
+        return (
+            <div className="flex flex-col items-center justify-center h-screen bg-slate-100 p-4">
+                <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
+                    <h1 className="text-2xl font-bold text-slate-800 mb-2">Access Denied</h1>
+                    <p className="text-slate-600 mb-4">You do not have administrative privileges.</p>
+
+                    <div className="bg-slate-50 p-4 rounded-lg text-left text-sm font-mono text-slate-700 mb-6">
+                        <p><strong>User:</strong> {user.email}</p>
+                        <p><strong>UID:</strong> {user.uid}</p>
+                        <p><strong>Status:</strong> Not recognized as Admin</p>
+                        <p className="border-t border-slate-200 mt-2 pt-2 text-xs text-slate-400">
+                            Checking: Env ({ADMIN_EMAILS.length}) & Firestore
+                        </p>
+                    </div>
+
+                    <Link to="/member/studio" className="bg-slate-900 text-white px-6 py-2 rounded-full hover:bg-slate-800 transition-colors">
+                        Return to Studio
+                    </Link>
+                </div>
+            </div>
+        );
     }
 
     const navItems = [
@@ -66,8 +117,8 @@ export function AdminLayout() {
                                 key={item.path}
                                 to={item.path}
                                 className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${location.pathname === item.path
-                                        ? "bg-slate-900 text-white"
-                                        : "text-slate-600 hover:bg-slate-100"
+                                    ? "bg-slate-900 text-white"
+                                    : "text-slate-600 hover:bg-slate-100"
                                     }`}
                             >
                                 <span>{item.icon}</span>

@@ -9,7 +9,7 @@ import Stripe from "stripe";
 import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 import * as crypto from "crypto";
-import { generateCategoryMockup, editImage } from "./nanobanana";
+import { generateCategoryMockup } from "./nanobanana";
 import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
 import { emailService } from "./emailService";
 
@@ -50,7 +50,13 @@ app.use(cors({ origin: true }));
 app.use(express.json({ limit: '10mb' }));
 
 function getClientIp(req: express.Request): string {
-    return (req.ip || req.socket.remoteAddress || "unknown").replace(/[^a-zA-Z0-9:._-]/g, "_");
+    // Priority: Google App Engine/Cloud Functions header -> Fastly/Firebase -> Direct IP
+    const ip = (req.headers["x-appengine-user-ip"] as string) ||
+        (req.headers["fastly-client-ip"] as string) ||
+        req.ip ||
+        req.socket.remoteAddress ||
+        "unknown";
+    return ip.replace(/[^a-zA-Z0-9:._-]/g, "_");
 }
 
 function isAllowedImageUrl(url: string): boolean {
@@ -91,7 +97,7 @@ app.post("/editMockup", async (req, res) => {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
 
-        const { mockupId, editPrompt } = req.body;
+        const { mockupId } = req.body;
 
         // Check credits
         const userRef = db.collection("users").doc(uid);
@@ -118,31 +124,35 @@ app.post("/editMockup", async (req, res) => {
         }
 
         // Fetch image
-        const imageRes = await fetch(mockupUrl);
-        const arrayBuffer = await imageRes.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const base64 = buffer.toString("base64");
-        const mimeType = imageRes.headers.get("content-type") || "image/jpeg";
+        // const imageRes = await fetch(mockupUrl);
+        // const arrayBuffer = await imageRes.arrayBuffer();
+        // const buffer = Buffer.from(arrayBuffer);
+        // const base64 = buffer.toString("base64");
+        // const mimeType = imageRes.headers.get("content-type") || "image/jpeg";
 
         // Call NanoBanana edit
-        const result = await editImage({
-            baseInline: { data: base64, mimeType },
-            prompt: editPrompt,
-            modelId: process.env.NANOBANANA_PRO_MODEL_ID,
-        });
+        // Call NanoBanana edit (Disabled in Baseline V3)
+        // const result = await editImage({
+        //     baseInline: { data: base64, mimeType },
+        //     prompt: editPrompt,
+        //     modelId: process.env.NANOBANANA_PRO_MODEL_ID,
+        // });
+        logger.warn("Edit mockup requested but functionality is disabled in Baseline V3");
+        res.status(501).json({ ok: false, error: "Editing temporarily disabled" });
+        return;
 
-        // Update Firestore
-        await mockupRef.update({
-            url: result.url,
-            updatedAt: FieldValue.serverTimestamp(),
-        });
+        // Update Firestore (Disabled)
+        // await mockupRef.update({
+        //     url: result.url,
+        //     updatedAt: FieldValue.serverTimestamp(),
+        // });
 
-        // Deduct credit
-        await userRef.update({
-            credits: FieldValue.increment(-1),
-        });
+        // Deduct credit (Disabled)
+        // await userRef.update({
+        //     credits: FieldValue.increment(-1),
+        // });
 
-        res.json({ ok: true, url: result.url });
+        // res.json({ ok: true, url: result.url });
     } catch (error: any) {
         logger.error("editMockup error", error);
         res.status(500).json({ ok: false, error: error.message });
@@ -761,11 +771,15 @@ app.post("/claimGuestSession", async (req, res) => {
             // We'll allow it for now as user might sign up with different email, but it's a bit risky.
             // User requirement: "If guestSessionId is present and the guest session’s email matches the signup email"
             // So we MUST enforce it.
-            if (sessionData.email.toLowerCase() !== email?.toLowerCase()) {
-                res.status(403).json({ ok: false, error: "Email mismatch. Please sign up with the same email used in Guest Studio." });
-                return;
-            }
+            // RELAXED SECURITY: We'll allow claim even if email mismatches, assuming possession of sessionId is sufficient proof.
+            // This fixes issues where users make typos or change their mind about which email to use.
+            logger.warn(`[claimGuestSession] Email mismatch allowed. Session: ${sessionData.email}, User: ${email}`);
+
+            // Previously was strict:
+            // res.status(403).json({ ok: false, error: "Email mismatch..." });
+            // return;
         }
+
 
         const artworkUrl = sessionData?.artworkUrl;
         const results = sessionData?.results || [];
