@@ -23,7 +23,11 @@ export function Pricing() {
         setError(null);
         try {
             const token = await user.getIdToken();
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`, {
+            const apiUrl = import.meta.env.PROD
+                ? "/api/createCheckoutSession"
+                : `${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`;
+
+            const response = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -84,7 +88,7 @@ export function Pricing() {
                             </div>
                         </div>
                         <p className="text-brand-brown/70 mb-4">Perfect for occasional projects.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 images per month</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
                         <Button
                             variant="outline"
                             className="w-full mt-auto"
@@ -109,7 +113,7 @@ export function Pricing() {
                             <p className="text-sm text-brand-brown/60 mt-1">Billed $30 every 3 months</p>
                         </div>
                         <p className="text-brand-brown/80 mb-4">Great for active artists.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 images per month</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
                         <Button
                             className="w-full mt-auto"
                             onClick={() => handleSubscribe("quarterly")}
@@ -130,7 +134,7 @@ export function Pricing() {
                             <p className="text-sm text-brand-brown/60 mt-1">Billed $42 every 6 months</p>
                         </div>
                         <p className="text-brand-brown/70 mb-4">Best value for long-term use.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 images per month</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
                         <Button
                             variant="outline"
                             className="w-full mt-auto"

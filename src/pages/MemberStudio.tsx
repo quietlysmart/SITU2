@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { db, storage } from "../lib/firebase";
+import { startTopUpCheckout } from "../lib/billing";
 import { collection, addDoc, query, onSnapshot, doc, serverTimestamp, orderBy, setDoc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "../components/ui/button";
@@ -16,6 +17,7 @@ export function MemberStudio() {
     const [selectedArtwork, setSelectedArtwork] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
     const [generating, setGenerating] = useState(false);
+    const [topUpLoading, setTopUpLoading] = useState(false);
     const [mockups, setMockups] = useState<any[]>([]);
     const [credits, setCredits] = useState(0);
     const [loading, setLoading] = useState(true);
@@ -30,6 +32,17 @@ export function MemberStudio() {
     const [selectedMockupForView, setSelectedMockupForView] = useState<any | null>(null);
     const [showLowCreditsPopup, setShowLowCreditsPopup] = useState(false);
     const [userPlan, setUserPlan] = useState<string>("free");
+    const computeCredits = (data: any) => {
+        const monthly = typeof data?.monthlyCreditsRemaining === "number" ? data.monthlyCreditsRemaining : 0;
+        const bonus = typeof data?.bonusCredits === "number" ? data.bonusCredits : 0;
+        const legacy = typeof data?.credits === "number" ? data.credits : 0;
+        const total = monthly + bonus;
+        return {
+            total: total || legacy,
+            monthly,
+            bonus,
+        };
+    };
 
     // Auth & Data Subscription
     useEffect(() => {
@@ -43,7 +56,8 @@ export function MemberStudio() {
         const unsubUser = onSnapshot(doc(db, "users", user.uid), async (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
-                const currentCredits = data.credits || 0;
+                const creditInfo = computeCredits(data);
+                const currentCredits = creditInfo.total;
                 const plan = data.plan || "free";
 
                 setCredits(currentCredits);
@@ -62,6 +76,8 @@ export function MemberStudio() {
                         displayName: user.displayName,
                         createdAt: serverTimestamp(),
                         plan: "free",
+                        bonusCredits: 12,
+                        monthlyCreditsRemaining: 0,
                         credits: 12
                     });
                 } catch (err) {
@@ -152,6 +168,19 @@ export function MemberStudio() {
         }
     };
 
+    const handleTopUp = async () => {
+        if (!user) return;
+        setTopUpLoading(true);
+        try {
+            await startTopUpCheckout(user);
+        } catch (error: any) {
+            console.error("[MemberStudio] Top-up error:", error);
+            alert(error.message || "Failed to start checkout");
+        } finally {
+            setTopUpLoading(false);
+        }
+    };
+
     const handleGenerate = async () => {
         console.log("[MemberStudio] handleGenerate called!");
         console.log("[MemberStudio] selectedArtwork:", selectedArtwork);
@@ -175,7 +204,11 @@ export function MemberStudio() {
             console.log("[MemberStudio] product:", selectedProduct);
             console.log("[MemberStudio] API URL:", import.meta.env.VITE_API_BASE_URL);
 
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/generateMemberMockups`, {
+            const apiUrl = import.meta.env.PROD
+                ? "/api/generateMemberMockups"
+                : `${import.meta.env.VITE_API_BASE_URL}/generateMemberMockups`;
+
+            const response = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -252,7 +285,7 @@ export function MemberStudio() {
     if (loading) return <div className="flex justify-center items-center h-screen text-brand-brown">Loading studio...</div>;
 
     return (
-        <div className="flex h-[calc(100vh-64px)] bg-brand-cream relative">
+        <div className="flex flex-col md:flex-row md:h-[calc(100vh-64px)] min-h-[calc(100vh-64px)] bg-brand-cream relative overflow-x-hidden">
             {/* Modal */}
             {selectedMockupForView && (
                 <div
@@ -337,10 +370,12 @@ export function MemberStudio() {
             )}
 
             {/* Left Sidebar: Artwork Gallery */}
-            <div className="w-64 bg-white/50 border-r border-brand-brown/10 p-4 flex flex-col flex-shrink-0">
+            {/* Desktop: Order 1 (default). Mobile: Order 1. */}
+            <div className="w-full md:w-64 bg-white/50 border-r border-brand-brown/10 p-4 flex flex-col flex-shrink-0 h-auto md:h-full order-1">
                 <h3 className="font-semibold text-sm text-brand-brown/50 mb-3 uppercase tracking-wider">Your Artwork</h3>
 
-                <div className="flex-1 overflow-y-auto space-y-3">
+                {/* Mobile: Horizontal scroll or grid? Grid for now as per requirements. */}
+                <div className="flex-1 md:overflow-y-auto space-y-3">
                     <label className="block">
                         <div className="border-2 border-dashed border-brand-brown/20 rounded-lg p-4 text-center hover:bg-brand-sand/30 hover:border-brand-brown/30 cursor-pointer transition-all group">
                             <span className="text-2xl text-brand-brown/40 group-hover:text-brand-brown/60 block mb-1">+</span>
@@ -357,7 +392,7 @@ export function MemberStudio() {
                         </div>
                     </label>
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-4 md:grid-cols-2 gap-2">
                         {artworks.map(art => (
                             <div
                                 key={art.id}
@@ -375,14 +410,15 @@ export function MemberStudio() {
             </div>
 
             {/* Center: Mockups Grid */}
-            <div className="flex-1 flex flex-col min-w-0 bg-brand-cream">
+            {/* Desktop: Order 2. Mobile: Order 3 (Bottom). */}
+            <div className="flex-1 flex flex-col min-w-0 bg-brand-cream order-3 md:order-2 min-h-[500px] md:min-h-0">
                 <div className="h-16 border-b border-brand-brown/10 bg-white/50 px-8 flex items-center justify-between flex-shrink-0">
                     <h1 className="text-xl font-bold text-brand-brown font-serif">Member Studio</h1>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-8">
+                <div className="flex-1 md:overflow-y-auto p-4 md:p-8">
                     {mockups.length === 0 ? (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                        <div className="h-full flex flex-col items-center justify-center text-slate-400 min-h-[300px]">
                             <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 flex items-center justify-center text-2xl">🎨</div>
                             <p className="text-lg font-medium text-slate-600">No mockups yet</p>
                             <p className="text-sm mt-1">Select an artwork and create your first mockup.</p>
@@ -443,8 +479,9 @@ export function MemberStudio() {
             </div>
 
             {/* Right Sidebar: Controls */}
-            <div className="w-80 bg-white/50 border-l border-brand-brown/10 p-6 flex flex-col flex-shrink-0 overflow-y-auto">
-                <div className="mb-8">
+            {/* Desktop: Order 3. Mobile: Order 2 (Middle). */}
+            <div className="w-full md:w-80 bg-white/50 border-l border-brand-brown/10 p-6 flex flex-col flex-shrink-0 md:overflow-y-auto h-auto md:h-full order-2 md:order-3 border-t md:border-t-0 md:border-l">
+                <div className="mb-4 md:mb-8">
                     <h2 className="text-lg font-bold text-brand-brown mb-1 font-serif">Create</h2>
                     <p className="text-sm text-brand-brown/70">Create new mockups from your art.</p>
                 </div>
@@ -534,6 +571,15 @@ export function MemberStudio() {
                         ) : (
                             `Create (${numVariations} credit${numVariations > 1 ? 's' : ''})`
                         )}
+                    </Button>
+
+                    <Button
+                        onClick={handleTopUp}
+                        disabled={topUpLoading}
+                        variant="outline"
+                        className="w-full mt-3 border-brand-brown text-brand-brown hover:bg-brand-sand/60"
+                    >
+                        {topUpLoading ? "Loading..." : "Buy 50 credits - $12"}
                     </Button>
 
                     {credits < numVariations && (

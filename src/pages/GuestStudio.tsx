@@ -65,7 +65,9 @@ export function GuestStudio() {
         setGenerationError(null);
         console.log("Starting generation with previewUrl length:", previewUrl.length);
         try {
-            const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/generateGuestMockups`;
+            const apiUrl = import.meta.env.PROD
+                ? "/api/generateGuestMockups"
+                : `${import.meta.env.VITE_API_BASE_URL}/generateGuestMockups`;
             console.log("Fetching from:", apiUrl);
 
             const response = await fetch(apiUrl, {
@@ -104,8 +106,12 @@ export function GuestStudio() {
 
         setIsSending(true);
         setEmailError(null);
+        const apiUrl = import.meta.env.PROD
+            ? "/api/sendGuestMockups"
+            : `${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`;
+
         try {
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/sendGuestMockups`, {
+            const response = await fetch(apiUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

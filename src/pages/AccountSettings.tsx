@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { updateProfile, updatePassword, updateEmail } from "firebase/auth";
 import { db } from "../lib/firebase";
+import { startTopUpCheckout } from "../lib/billing";
 import { doc, updateDoc, onSnapshot } from "firebase/firestore";
 import { Button } from "../components/ui/button";
 import { useSearchParams } from "react-router-dom";
@@ -18,12 +19,18 @@ export function AccountSettings() {
     const [loading, setLoading] = useState(false);
     const [canceling, setCanceling] = useState(false);
     const [topUpLoading, setTopUpLoading] = useState(false);
-    const [syncing, setSyncing] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
     // Password State
     const [newPassword, setNewPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
+    const computeCredits = (data: any) => {
+        const monthly = typeof data?.monthlyCreditsRemaining === "number" ? data.monthlyCreditsRemaining : 0;
+        const bonus = typeof data?.bonusCredits === "number" ? data.bonusCredits : 0;
+        const legacy = typeof data?.credits === "number" ? data.credits : 0;
+        const total = monthly + bonus;
+        return total || legacy;
+    };
 
     useEffect(() => {
         if (user) {
@@ -34,15 +41,15 @@ export function AccountSettings() {
             const unsubscribe = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    const planName = data.plan === "monthly" ? "Monthly Subscription" :
-                        data.plan === "quarterly" ? "Quarterly Subscription" :
-                            data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
-                    setPlan(planName);
-                    setCredits(data.credits || 0);
-                    setSubscriptionStatus(data.subscriptionStatus || null);
-                    setCreditsResetAt(data.creditsResetAt?.toDate?.() || null);
-                }
-            });
+                const planName = data.plan === "monthly" ? "Monthly Subscription" :
+                    data.plan === "quarterly" ? "Quarterly Subscription" :
+                        data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
+                setPlan(planName);
+                setCredits(computeCredits(data));
+                setSubscriptionStatus(data.subscriptionStatus || null);
+                setCreditsResetAt(data.creditsResetAt?.toDate?.() || null);
+            }
+        });
 
             return () => unsubscribe();
         }
@@ -124,7 +131,11 @@ export function AccountSettings() {
 
         try {
             const token = await user.getIdToken();
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/cancelSubscription`, {
+            const apiUrl = import.meta.env.PROD
+                ? "/api/cancelSubscription"
+                : `${import.meta.env.VITE_API_BASE_URL}/cancelSubscription`;
+
+            const response = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
                     Authorization: `Bearer ${token}`,
@@ -150,40 +161,6 @@ export function AccountSettings() {
         }
     };
 
-    const handleSyncSubscription = async () => {
-        if (!user) return;
-
-        setSyncing(true);
-        setMessage(null);
-
-        try {
-            const token = await user.getIdToken();
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/syncSubscription`, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    "Content-Type": "application/json"
-                }
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Failed to sync subscription");
-            }
-
-            setMessage({
-                type: "success",
-                text: data.message || "Subscription synced successfully!"
-            });
-        } catch (error: any) {
-            console.error("Sync subscription error:", error);
-            setMessage({ type: "error", text: error.message });
-        } finally {
-            setSyncing(false);
-        }
-    };
-
     const handleTopUp = async () => {
         if (!user) return;
 
@@ -191,28 +168,11 @@ export function AccountSettings() {
         setMessage(null);
 
         try {
-            const token = await user.getIdToken();
-            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createTopUpSession`, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    "Content-Type": "application/json"
-                }
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || "Failed to create top-up session");
-            }
-
-            // Redirect to Stripe checkout
-            if (data.url) {
-                window.location.href = data.url;
-            }
+            await startTopUpCheckout(user);
         } catch (error: any) {
             console.error("Top-up error:", error);
-            setMessage({ type: "error", text: error.message });
+            setMessage({ type: "error", text: error.message || "Failed to start checkout" });
+        } finally {
             setTopUpLoading(false);
         }
     };
@@ -283,13 +243,6 @@ export function AccountSettings() {
                                     )}
                                 </>
                             )}
-                            <Button
-                                variant="outline"
-                                onClick={handleSyncSubscription}
-                                disabled={syncing}
-                            >
-                                {syncing ? "Syncing..." : "🔄 Sync Subscription"}
-                            </Button>
                         </div>
                     </div>
                 </div>

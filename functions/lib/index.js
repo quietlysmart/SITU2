@@ -32,6 +32,9 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -56,6 +59,7 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
+// Note: URLs are validated lazily on usage to prevent deploy-time errors.
 const STORAGE_BUCKET_NAME = bucket.name.toLowerCase();
 const ALLOWED_IMAGE_HOSTS = new Set([
     "firebasestorage.googleapis.com",
@@ -78,7 +82,24 @@ const app = (0, express_1.default)();
 // Do not trust X-Forwarded-For; use connection IPs for rate limiting.
 app.set("trust proxy", false);
 app.use((0, cors_1.default)({ origin: true }));
-app.use(express_1.default.json({ limit: '10mb' }));
+// Preserve raw body for Stripe webhook signature verification
+const jsonBodyParser = express_1.default.json({ limit: "10mb" });
+app.use((req, res, next) => {
+    if (req.originalUrl.startsWith("/stripeWebhook") || req.originalUrl.startsWith("/api/stripeWebhook")) {
+        return next();
+    }
+    return jsonBodyParser(req, res, next);
+});
+// Rewrite middleware for Hosting integration
+app.use((req, res, next) => {
+    if (req.url.startsWith("/api/")) {
+        req.url = req.url.replace("/api/", "/");
+    }
+    next();
+});
+app.get("/health", (req, res) => {
+    res.json({ ok: true, env: "production", timestamp: new Date().toISOString() });
+});
 function getClientIp(req) {
     // Priority: Google App Engine/Cloud Functions header -> Fastly/Firebase -> Direct IP
     const ip = req.headers["x-appengine-user-ip"] ||
@@ -113,8 +134,82 @@ function isAllowedImageUrl(url) {
 function isDataUrl(value) {
     return value.startsWith("data:");
 }
+function normalizeCreditState(data) {
+    let monthlyCreditsRemaining = typeof (data === null || data === void 0 ? void 0 : data.monthlyCreditsRemaining) === "number" ? Math.max(0, data.monthlyCreditsRemaining) : 0;
+    let bonusCredits = typeof (data === null || data === void 0 ? void 0 : data.bonusCredits) === "number" ? Math.max(0, data.bonusCredits) : 0;
+    // Migrate legacy credits into bonus bucket if new fields are absent
+    if (monthlyCreditsRemaining === 0 && bonusCredits === 0 && typeof (data === null || data === void 0 ? void 0 : data.credits) === "number") {
+        bonusCredits = Math.max(0, data.credits);
+    }
+    const totalCredits = monthlyCreditsRemaining + bonusCredits;
+    return { monthlyCreditsRemaining, bonusCredits, totalCredits };
+}
+function buildCreditUpdate(state) {
+    return {
+        monthlyCreditsRemaining: state.monthlyCreditsRemaining,
+        bonusCredits: state.bonusCredits,
+        credits: state.totalCredits,
+    };
+}
+function getPlanFromPriceId(priceId) {
+    if (!priceId)
+        return "unknown";
+    if (priceId === process.env.STRIPE_PRICE_MONTHLY_ID)
+        return "monthly";
+    if (priceId === process.env.STRIPE_PRICE_QUARTERLY_ID)
+        return "quarterly";
+    if (priceId === process.env.STRIPE_PRICE_SIX_MONTHS_ID)
+        return "sixMonths";
+    return "unknown";
+}
+async function findUserRefByCustomerId(customerId) {
+    var _a;
+    if (!customerId)
+        return null;
+    let usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
+    if (!usersSnapshot.empty) {
+        return usersSnapshot.docs[0].ref;
+    }
+    // Fallback: look for firebaseUid in customer metadata
+    try {
+        const customer = await stripe.customers.retrieve(customerId);
+        if (customer && !customer.deleted && ((_a = customer.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid)) {
+            const firebaseUid = customer.metadata.firebaseUid;
+            const userDoc = await db.collection("users").doc(firebaseUid).get();
+            if (userDoc.exists) {
+                // Store customerId for future fast lookups
+                await userDoc.ref.update({ stripeCustomerId: customerId });
+                return userDoc.ref;
+            }
+        }
+    }
+    catch (err) {
+        logger.error(`[StripeWebhook] Failed to retrieve customer ${customerId} metadata`, err);
+    }
+    return null;
+}
+async function resolveUserRef(firebaseUid, customerId) {
+    if (firebaseUid) {
+        const userDoc = await db.collection("users").doc(firebaseUid).get();
+        if (userDoc.exists) {
+            return userDoc.ref;
+        }
+    }
+    return findUserRefByCustomerId(customerId);
+}
+async function recordProcessedEvent(tx, processedRef, event, firebaseUid, userFound) {
+    tx.set(processedRef, {
+        eventType: event.type,
+        processedAt: firestore_2.FieldValue.serverTimestamp(),
+        firebaseUid,
+        userFound,
+    });
+}
+function logCreditChange(event, firebaseUid, before, after, note) {
+    logger.info(`[StripeWebhook] processed ${event.type} ${event.id} uid=${firebaseUid || "unknown"} monthly ${before.monthlyCreditsRemaining}->${after.monthlyCreditsRemaining} bonus ${before.bonusCredits}->${after.bonusCredits}${note ? ` (${note})` : ""}`);
+}
 app.post("/editMockup", async (req, res) => {
-    var _a, _b;
+    var _a;
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -128,7 +223,7 @@ app.post("/editMockup", async (req, res) => {
         // Check credits
         const userRef = db.collection("users").doc(uid);
         const userDoc = await userRef.get();
-        const credits = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.credits) || 0;
+        const credits = normalizeCreditState(userDoc.data()).totalCredits;
         if (credits < 1) {
             res.status(403).json({ ok: false, error: "Insufficient credits" });
             return;
@@ -140,7 +235,7 @@ app.post("/editMockup", async (req, res) => {
             res.status(404).json({ ok: false, error: "Mockup not found" });
             return;
         }
-        const mockupUrl = (_b = mockupDoc.data()) === null || _b === void 0 ? void 0 : _b.url;
+        const mockupUrl = (_a = mockupDoc.data()) === null || _a === void 0 ? void 0 : _a.url;
         if (!mockupUrl || !isAllowedImageUrl(mockupUrl)) {
             res.status(400).json({ ok: false, error: "Invalid mockup source URL" });
             return;
@@ -207,8 +302,13 @@ async function uploadDataUrl(dataUrl, path) {
 }
 app.post("/generateGuestMockups", async (req, res) => {
     var _a, _b;
+    const start = Date.now();
+    const requestId = crypto.randomUUID();
+    let clientIp = "unknown";
     try {
         let { artworkUrl } = req.body;
+        clientIp = getClientIp(req);
+        logger.info(`[generateGuestMockups] Start ${requestId} IP:${clientIp}`);
         if (!artworkUrl) {
             res.status(400).json({ ok: false, error: "Missing artworkUrl" });
             return;
@@ -218,10 +318,16 @@ app.post("/generateGuestMockups", async (req, res) => {
             return;
         }
         // Rate limiting: Check IP for abuse (max 10 sessions per IP per day)
-        const clientIp = getClientIp(req);
         const rateLimitKey = `rate_limit_guest_${clientIp.replace(/\./g, "_")}`;
         const rateLimitRef = db.collection("rate_limits").doc(rateLimitKey);
-        const rateLimitDoc = await rateLimitRef.get();
+        let rateLimitDoc;
+        try {
+            rateLimitDoc = await rateLimitRef.get();
+        }
+        catch (err) {
+            console.error("[generateGuestMockups] Rate Limit Read Error:", err);
+            throw new Error(`Rate Limit Check Failed: ${err.message}`);
+        }
         const now = Date.now();
         const oneDayAgo = now - (24 * 60 * 60 * 1000);
         const GUEST_SESSION_LIMIT = 10; // Max 10 guest sessions per IP per day
@@ -238,15 +344,27 @@ app.post("/generateGuestMockups", async (req, res) => {
                 return;
             }
             // Reset if more than a day has passed
-            if (lastReset <= oneDayAgo) {
-                await rateLimitRef.set({ count: 1, lastReset: firestore_2.FieldValue.serverTimestamp() });
+            try {
+                if (lastReset <= oneDayAgo) {
+                    await rateLimitRef.set({ count: 1, lastReset: firestore_2.FieldValue.serverTimestamp() });
+                }
+                else {
+                    await rateLimitRef.update({ count: firestore_2.FieldValue.increment(1) });
+                }
             }
-            else {
-                await rateLimitRef.update({ count: firestore_2.FieldValue.increment(1) });
+            catch (err) {
+                console.error("[generateGuestMockups] Rate Limit Write Error:", err);
+                throw new Error(`Rate Limit Write Failed: ${err.message}`);
             }
         }
         else {
-            await rateLimitRef.set({ count: 1, lastReset: firestore_2.FieldValue.serverTimestamp() });
+            try {
+                await rateLimitRef.set({ count: 1, lastReset: firestore_2.FieldValue.serverTimestamp() });
+            }
+            catch (err) {
+                console.error("[generateGuestMockups] Rate Limit Init Error:", err);
+                throw new Error(`Rate Limit Init Failed: ${err.message}`);
+            }
         }
         // Create a session ID first
         const sessionRef = db.collection("guest_sessions").doc();
@@ -268,39 +386,57 @@ app.post("/generateGuestMockups", async (req, res) => {
             }
         }
         // Generate mockups
-        const tempResults = [];
-        const results = [];
-        const errors = [];
-        // For guest, we generate 4 standard mockups
         const categories = ["wall", "prints", "wearable", "phone"];
-        // 1. Generate all (get Data URLs)
-        for (const category of categories) {
+        logger.info(`[generateGuestMockups] Starting generation for ${categories.length} categories...`);
+        // 1. Generate all in PARALLEL
+        const generationPromises = categories.map(async (category) => {
             try {
+                const genStart = Date.now();
                 const dataUrl = await (0, nanobanana_1.generateCategoryMockup)(category, artworkUrl);
+                const duration = Date.now() - genStart;
                 if (dataUrl) {
-                    tempResults.push({ category, dataUrl });
+                    const size = dataUrl.length;
+                    logger.info(`[generateGuestMockups] Generated ${category} (${size} bytes) in ${duration}ms`);
+                    return { category, dataUrl, error: null };
                 }
                 else {
-                    errors.push({ category, message: "Generation failed" });
+                    return { category, dataUrl: null, error: "Generation failed (null result)" };
                 }
             }
             catch (error) {
                 logger.error(`Error generating ${category}:`, error);
-                errors.push({ category, message: error.message });
+                return { category, dataUrl: null, error: error.message };
             }
-        }
-        // 2. Upload generated mockups to Storage
-        for (const item of tempResults) {
+        });
+        const genResults = await Promise.all(generationPromises);
+        // 2. Upload generated mockups to Storage in PARALLEL
+        const uploadPromises = genResults.map(async (item) => {
+            if (item.error || !item.dataUrl) {
+                return { category: item.category, url: null, error: item.error };
+            }
             try {
                 const storagePath = `guest_sessions/${sessionId}/${item.category}_${Date.now()}.png`;
                 const storageUrl = await uploadDataUrl(item.dataUrl, storagePath);
-                results.push({ category: item.category, url: storageUrl });
+                return { category: item.category, url: storageUrl, error: null };
             }
             catch (error) {
                 logger.error(`Error uploading ${item.category}:`, error);
-                errors.push({ category: item.category, message: `Upload failed: ${error.message}` });
+                return { category: item.category, url: null, error: `Upload failed: ${error.message}` };
             }
-        }
+        });
+        const finalResults = await Promise.all(uploadPromises);
+        const results = [];
+        const errors = [];
+        finalResults.forEach(item => {
+            if (item.url) {
+                results.push({ category: item.category, url: item.url });
+            }
+            else {
+                errors.push({ category: item.category, message: item.error || "Unknown error" });
+            }
+        });
+        const totalTime = Date.now() - start;
+        logger.info(`[generateGuestMockups] Finished in ${totalTime}ms. Success: ${results.length}, Errors: ${errors.length}`);
         // 3. Store guest session with STORAGE URLs (small strings)
         if (results.length > 0) {
             await sessionRef.set({
@@ -327,8 +463,8 @@ app.post("/generateGuestMockups", async (req, res) => {
         res.json(response);
     }
     catch (error) {
-        logger.error("generateGuestMockups error", error);
-        res.status(500).json({ ok: false, error: error.message });
+        logger.error(`[generateGuestMockups] Fatal error (Request ${requestId}):`, error);
+        res.status(500).json({ ok: false, error: error.message, requestId });
     }
 });
 app.post("/sendGuestMockups", async (req, res) => {
@@ -432,13 +568,20 @@ app.post("/createCheckoutSession", async (req, res) => {
                 return;
         }
         if (!priceId) {
-            logger.error(`[createCheckoutSession] Price ID not found for plan: ${plan}. 
-                Env Checks:
-                MONTHLY: ${process.env.STRIPE_PRICE_MONTHLY_ID} (${process.env.STRIPE_PRICE_MONTHLY_ID ? 'Set' : 'Missing'})
-                QUARTERLY: ${process.env.STRIPE_PRICE_QUARTERLY_ID} (${process.env.STRIPE_PRICE_QUARTERLY_ID ? 'Set' : 'Missing'})
-                SIXMONTHS: ${process.env.STRIPE_PRICE_SIX_MONTHS_ID} (${process.env.STRIPE_PRICE_SIX_MONTHS_ID ? 'Set' : 'Missing'})
-            `);
-            res.status(500).json({ ok: false, error: "Server configuration error: Price ID missing" });
+            const missingEnvVars = [];
+            if (!process.env.STRIPE_PRICE_MONTHLY_ID)
+                missingEnvVars.push("STRIPE_PRICE_MONTHLY_ID");
+            if (!process.env.STRIPE_PRICE_QUARTERLY_ID)
+                missingEnvVars.push("STRIPE_PRICE_QUARTERLY_ID");
+            if (!process.env.STRIPE_PRICE_SIX_MONTHS_ID)
+                missingEnvVars.push("STRIPE_PRICE_SIX_MONTHS_ID");
+            const missingList = missingEnvVars.join(", ");
+            logger.error(`[Stripe] Missing env: ${missingList} (plan: ${plan})`);
+            res.status(500).json({
+                ok: false,
+                error: "Server configuration error: Price ID missing",
+                details: { missingEnvVars }
+            });
             return;
         }
         logger.info(`[createCheckoutSession] Using Price ID: ${priceId}`);
@@ -577,21 +720,21 @@ app.post("/syncSubscription", async (req, res) => {
         const creditsResetAt = currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null;
         // All subscription plans get 50 credits
         const SUBSCRIPTION_CREDITS = 50;
+        const userRef = db.collection("users").doc(uid);
+        const currentCredits = normalizeCreditState(userData);
+        const nextState = {
+            monthlyCreditsRemaining: SUBSCRIPTION_CREDITS,
+            bonusCredits: currentCredits.bonusCredits,
+            totalCredits: SUBSCRIPTION_CREDITS + currentCredits.bonusCredits,
+        };
         // Update user document
-        await db.collection("users").doc(uid).update({
-            plan,
-            credits: SUBSCRIPTION_CREDITS,
-            creditsResetAt,
-            subscriptionStatus: activeSubscription.status,
-            stripeSubscriptionId: activeSubscription.id,
-            stripeCustomerId: customerId
-        });
-        logger.info(`[syncSubscription] Updated user ${uid}: plan=${plan}, credits=${SUBSCRIPTION_CREDITS}`);
+        await userRef.update(Object.assign(Object.assign({ plan }, buildCreditUpdate(nextState)), { creditsResetAt, subscriptionStatus: activeSubscription.status, stripeSubscriptionId: activeSubscription.id, stripeCustomerId: customerId }));
+        logger.info(`[syncSubscription] Updated user ${uid}: plan=${plan}, monthly=${SUBSCRIPTION_CREDITS}, bonus=${currentCredits.bonusCredits}`);
         res.json({
             ok: true,
-            message: `Subscription synced! You now have ${SUBSCRIPTION_CREDITS} credits.`,
+            message: `Subscription synced! You now have ${nextState.totalCredits} credits.`,
             plan,
-            credits: SUBSCRIPTION_CREDITS,
+            credits: nextState.totalCredits,
             creditsResetAt: creditsResetAt === null || creditsResetAt === void 0 ? void 0 : creditsResetAt.toISOString()
         });
     }
@@ -762,124 +905,290 @@ app.post("/claimGuestSession", async (req, res) => {
     }
 });
 app.post("/stripeWebhook", express_1.default.raw({ type: "application/json" }), async (req, res) => {
-    var _a, _b;
+    var _a;
     const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+        logger.error("[Stripe] STRIPE_WEBHOOK_SECRET is missing in environment variables. Webhook cannot be verified.");
+        res.status(500).send("Server configuration error: Missing Webhook Secret");
+        return;
+    }
+    if (!sig) {
+        logger.error("[Stripe] stripe-signature header missing on webhook request.");
+        res.status(400).send("Webhook Error: Missing stripe-signature header");
+        return;
+    }
     let event;
+    const rawBody = (_a = req.rawBody) !== null && _a !== void 0 ? _a : req.body;
+    if (!(typeof rawBody === "string" || Buffer.isBuffer(rawBody))) {
+        logger.error("[StripeWebhook] verify failed: Missing raw body");
+        res.status(400).send("Webhook Error: Missing raw body");
+        return;
+    }
     try {
-        event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+        event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+        logger.info(`[StripeWebhook] verified ${event.type} ${event.id}`);
     }
     catch (err) {
-        logger.error("Webhook signature verification failed.", err);
+        logger.error(`[StripeWebhook] verify failed: ${err.message}`, err);
         res.status(400).send(`Webhook Error: ${err.message}`);
         return;
     }
     try {
-        if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
-            const subscription = event.data.object;
-            const customerId = subscription.customer;
-            logger.info(`[Webhook] Processing ${event.type} for customer: ${customerId}`);
-            let usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
-            // Fallback: If no user found by customerId, try to find by looking up the customer's metadata
-            if (usersSnapshot.empty) {
-                logger.warn(`[Webhook] No user found by stripeCustomerId: ${customerId}. Attempting customer metadata lookup.`);
-                try {
-                    const customer = await stripe.customers.retrieve(customerId);
-                    if (customer && !customer.deleted && ((_a = customer.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid)) {
-                        const firebaseUid = customer.metadata.firebaseUid;
-                        logger.info(`[Webhook] Found firebaseUid in customer metadata: ${firebaseUid}`);
-                        const userDoc = await db.collection("users").doc(firebaseUid).get();
-                        if (userDoc.exists) {
-                            // Update the user with stripeCustomerId for future lookups
-                            await userDoc.ref.update({ stripeCustomerId: customerId });
-                            usersSnapshot = {
-                                empty: false,
-                                docs: [userDoc]
-                            };
-                            logger.info(`[Webhook] Found user via metadata and updated stripeCustomerId`);
-                        }
-                    }
-                }
-                catch (customerErr) {
-                    logger.error(`[Webhook] Failed to retrieve customer metadata`, customerErr);
-                }
-            }
-            if (!usersSnapshot.empty) {
-                const userDoc = usersSnapshot.docs[0];
-                const priceId = subscription.items.data[0].price.id;
-                let plan = "monthly";
-                // All subscription plans get 50 credits per billing period (non-rolling)
-                const SUBSCRIPTION_CREDITS = 50;
-                // Determine plan name from price ID
-                if (priceId === process.env.STRIPE_PRICE_MONTHLY_ID) {
-                    plan = "monthly";
-                }
-                else if (priceId === process.env.STRIPE_PRICE_QUARTERLY_ID) {
-                    plan = "quarterly";
-                }
-                else if (priceId === process.env.STRIPE_PRICE_SIX_MONTHS_ID) {
-                    plan = "sixMonths";
-                }
-                // Calculate next billing date for credit reset
-                const subscriptionData = subscription;
-                const currentPeriodEnd = subscriptionData.current_period_end;
-                const creditsResetAt = currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null;
-                // SET credits to 50 (not increment) - credits do NOT roll over
-                await userDoc.ref.update({
-                    plan,
-                    credits: SUBSCRIPTION_CREDITS,
-                    creditsResetAt,
-                    subscriptionStatus: subscription.status,
-                    stripeSubscriptionId: subscription.id,
-                });
-                logger.info(`[Webhook] Updated user ${userDoc.id}: plan=${plan}, credits=${SUBSCRIPTION_CREDITS}, resetsAt=${(creditsResetAt === null || creditsResetAt === void 0 ? void 0 : creditsResetAt.toISOString()) || 'N/A'}`);
-            }
-            else {
-                logger.error(`[Webhook] CRITICAL: No user found for customer ${customerId} - credits NOT updated!`);
-            }
+        let deduped = false;
+        if (event.type === "invoice.payment_succeeded") {
+            const result = await handleInvoicePaymentSucceeded(event);
+            deduped = (result === null || result === void 0 ? void 0 : result.deduped) || false;
         }
-        // Handle subscription cancellation
-        if (event.type === "customer.subscription.deleted") {
-            const subscription = event.data.object;
-            const customerId = subscription.customer;
-            const usersSnapshot = await db.collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
-            if (!usersSnapshot.empty) {
-                const userDoc = usersSnapshot.docs[0];
-                await userDoc.ref.update({
-                    plan: "free",
-                    subscriptionStatus: "canceled",
-                    stripeSubscriptionId: null,
-                    creditsResetAt: null,
-                    // Keep existing credits - they can use them until they run out
-                });
-                logger.info(`[Webhook] Subscription canceled for user ${userDoc.id}`);
-            }
+        else if (event.type === "checkout.session.completed") {
+            const result = await handleCheckoutSessionCompleted(event);
+            deduped = (result === null || result === void 0 ? void 0 : result.deduped) || false;
         }
-        // Handle one-time credit top-up purchases
-        if (event.type === "checkout.session.completed") {
-            const session = event.data.object;
-            // Only handle top-up purchases (mode: payment, not subscription)
-            if (session.mode === "payment" && ((_b = session.metadata) === null || _b === void 0 ? void 0 : _b.type) === "credit_topup") {
-                const uid = session.metadata.firebaseUid;
-                const creditsToAdd = parseInt(session.metadata.credits || "0");
-                if (uid && creditsToAdd > 0) {
-                    await db.collection("users").doc(uid).update({
-                        credits: firestore_2.FieldValue.increment(creditsToAdd)
-                    });
-                    logger.info(`[Webhook] Added ${creditsToAdd} credits to user ${uid} via top-up`);
-                }
-            }
+        else if (event.type === "customer.subscription.deleted") {
+            const result = await handleSubscriptionDeleted(event);
+            deduped = (result === null || result === void 0 ? void 0 : result.deduped) || false;
         }
-        res.json({ received: true });
+        else if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
+            const result = await handleSubscriptionUpdated(event);
+            deduped = (result === null || result === void 0 ? void 0 : result.deduped) || false;
+        }
+        res.json({ received: true, deduped });
     }
     catch (err) {
         logger.error("Webhook handler error", err);
         res.status(500).send(`Webhook Error: ${err.message}`);
     }
 });
+async function handleInvoicePaymentSucceeded(event) {
+    var _a, _b, _c, _d, _e, _f;
+    const invoice = event.data.object;
+    const firebaseUid = ((_a = invoice.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid) || null;
+    const customerId = typeof invoice.customer === "string" ? invoice.customer : null;
+    const userRef = await resolveUserRef(firebaseUid, customerId);
+    const billingReason = invoice.billing_reason;
+    const subscriptionId = typeof invoice.subscription === "string" ? invoice.subscription : null;
+    const lineItems = (((_b = invoice.lines) === null || _b === void 0 ? void 0 : _b.data) || []);
+    const primaryPriceId = (_d = (_c = lineItems[0]) === null || _c === void 0 ? void 0 : _c.price) === null || _d === void 0 ? void 0 : _d.id;
+    const plan = getPlanFromPriceId(primaryPriceId);
+    const creditsResetAt = ((_f = (_e = lineItems[0]) === null || _e === void 0 ? void 0 : _e.period) === null || _f === void 0 ? void 0 : _f.end) ? new Date(lineItems[0].period.end * 1000) : null;
+    const topUpPriceId = process.env.STRIPE_PRICE_TOPUP_ID;
+    const topUpQuantity = topUpPriceId
+        ? lineItems
+            .filter(item => { var _a; return ((_a = item.price) === null || _a === void 0 ? void 0 : _a.id) === topUpPriceId; })
+            .reduce((sum, item) => sum + (item.quantity || 1), 0)
+        : 0;
+    const processedRef = db.collection("stripe_events").doc(event.id);
+    let deduped = false;
+    let change = null;
+    await db.runTransaction(async (tx) => {
+        const processedDoc = await tx.get(processedRef);
+        if (processedDoc.exists) {
+            deduped = true;
+            return;
+        }
+        if (!userRef) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const userDoc = await tx.get(userRef);
+        if (!userDoc.exists) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const currentCredits = normalizeCreditState(userDoc.data());
+        let nextMonthly = currentCredits.monthlyCreditsRemaining;
+        let nextBonus = currentCredits.bonusCredits;
+        const extraUpdates = {};
+        if (billingReason === "subscription_create" || billingReason === "subscription_cycle") {
+            nextMonthly = 50;
+            if (plan !== "unknown")
+                extraUpdates.plan = plan;
+            if (subscriptionId)
+                extraUpdates.stripeSubscriptionId = subscriptionId;
+            extraUpdates.subscriptionStatus = "active";
+            extraUpdates.cancelAtPeriodEnd = false;
+            if (creditsResetAt)
+                extraUpdates.creditsResetAt = creditsResetAt;
+        }
+        if (topUpQuantity > 0) {
+            nextBonus += 50 * topUpQuantity;
+        }
+        const nextState = {
+            monthlyCreditsRemaining: Math.max(0, nextMonthly),
+            bonusCredits: Math.max(0, nextBonus),
+            totalCredits: Math.max(0, nextMonthly) + Math.max(0, nextBonus),
+        };
+        tx.update(userRef, Object.assign(Object.assign({}, buildCreditUpdate(nextState)), extraUpdates));
+        await recordProcessedEvent(tx, processedRef, event, firebaseUid || userRef.id, true);
+        change = { before: currentCredits, after: nextState };
+    });
+    if (deduped) {
+        logger.info(`[StripeWebhook] deduped ${event.type} ${event.id}`);
+    }
+    else if (change) {
+        const { before, after } = change;
+        logCreditChange(event, firebaseUid || (userRef ? userRef.id : null), before, after, `reason=${billingReason}${topUpQuantity ? ` topUpQty=${topUpQuantity}` : ""}`);
+    }
+    else {
+        logger.warn(`[StripeWebhook] ${event.type} ${event.id} no user found (customer=${customerId || "unknown"})`);
+    }
+    return { deduped };
+}
+async function handleCheckoutSessionCompleted(event) {
+    var _a, _b, _c;
+    const session = event.data.object;
+    const firebaseUid = ((_a = session.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid) || null;
+    const customerId = typeof session.customer === "string" ? session.customer : null;
+    const userRef = await resolveUserRef(firebaseUid, customerId);
+    const isTopUp = session.mode === "payment" && ((_b = session.metadata) === null || _b === void 0 ? void 0 : _b.type) === "credit_topup";
+    const isSubscriptionCheckout = session.mode === "subscription";
+    const subscriptionId = typeof session.subscription === "string" ? session.subscription : null;
+    const creditsFromMetadata = parseInt(((_c = session.metadata) === null || _c === void 0 ? void 0 : _c.credits) || "0", 10);
+    const topUpCredits = isTopUp ? (Number.isFinite(creditsFromMetadata) && creditsFromMetadata > 0 ? creditsFromMetadata : 50) : 0;
+    const processedRef = db.collection("stripe_events").doc(event.id);
+    let deduped = false;
+    let change = null;
+    await db.runTransaction(async (tx) => {
+        const processedDoc = await tx.get(processedRef);
+        if (processedDoc.exists) {
+            deduped = true;
+            return;
+        }
+        if (!userRef) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const userDoc = await tx.get(userRef);
+        if (!userDoc.exists) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const currentCredits = normalizeCreditState(userDoc.data());
+        let nextMonthly = currentCredits.monthlyCreditsRemaining;
+        let nextBonus = currentCredits.bonusCredits;
+        const extraUpdates = {};
+        if (isTopUp && topUpCredits > 0) {
+            nextBonus += topUpCredits;
+        }
+        if (isSubscriptionCheckout) {
+            nextMonthly = 50;
+            if (subscriptionId)
+                extraUpdates.stripeSubscriptionId = subscriptionId;
+            extraUpdates.subscriptionStatus = "active";
+        }
+        const nextState = {
+            monthlyCreditsRemaining: Math.max(0, nextMonthly),
+            bonusCredits: Math.max(0, nextBonus),
+            totalCredits: Math.max(0, nextMonthly) + Math.max(0, nextBonus),
+        };
+        tx.update(userRef, Object.assign(Object.assign({}, buildCreditUpdate(nextState)), extraUpdates));
+        await recordProcessedEvent(tx, processedRef, event, firebaseUid || userRef.id, true);
+        change = { before: currentCredits, after: nextState };
+    });
+    if (deduped) {
+        logger.info(`[StripeWebhook] deduped ${event.type} ${event.id}`);
+    }
+    else if (change) {
+        const note = isTopUp ? `topUp=${topUpCredits}` : (isSubscriptionCheckout ? "subscription_checkout" : undefined);
+        const { before, after } = change;
+        logCreditChange(event, firebaseUid || (userRef ? userRef.id : null), before, after, note);
+    }
+    else {
+        logger.warn(`[StripeWebhook] ${event.type} ${event.id} no user found (customer=${customerId || "unknown"})`);
+    }
+    return { deduped };
+}
+async function handleSubscriptionUpdated(event) {
+    var _a, _b, _c, _d, _e;
+    const subscription = event.data.object;
+    const firebaseUid = ((_a = subscription.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid) || null;
+    const customerId = subscription.customer;
+    const userRef = await resolveUserRef(firebaseUid, customerId);
+    const plan = getPlanFromPriceId((_e = (_d = (_c = (_b = subscription.items) === null || _b === void 0 ? void 0 : _b.data) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.price) === null || _e === void 0 ? void 0 : _e.id);
+    const status = subscription.status;
+    const currentPeriodEnd = subscription.current_period_end;
+    const creditsResetAt = currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null;
+    const processedRef = db.collection("stripe_events").doc(event.id);
+    let deduped = false;
+    await db.runTransaction(async (tx) => {
+        const processedDoc = await tx.get(processedRef);
+        if (processedDoc.exists) {
+            deduped = true;
+            return;
+        }
+        if (!userRef) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const updates = {
+            subscriptionStatus: status,
+            stripeSubscriptionId: subscription.id,
+            cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
+        };
+        if (plan !== "unknown")
+            updates.plan = plan;
+        if (creditsResetAt)
+            updates.creditsResetAt = creditsResetAt;
+        tx.update(userRef, updates);
+        await recordProcessedEvent(tx, processedRef, event, firebaseUid || userRef.id, true);
+    });
+    if (deduped) {
+        logger.info(`[StripeWebhook] deduped ${event.type} ${event.id}`);
+    }
+    else {
+        logger.info(`[StripeWebhook] processed ${event.type} ${event.id} uid=${firebaseUid || (userRef ? userRef.id : "unknown")} status=${status}`);
+    }
+    return { deduped };
+}
+async function handleSubscriptionDeleted(event) {
+    var _a;
+    const subscription = event.data.object;
+    const firebaseUid = ((_a = subscription.metadata) === null || _a === void 0 ? void 0 : _a.firebaseUid) || null;
+    const customerId = subscription.customer;
+    const userRef = await resolveUserRef(firebaseUid, customerId);
+    const processedRef = db.collection("stripe_events").doc(event.id);
+    let deduped = false;
+    let change = null;
+    await db.runTransaction(async (tx) => {
+        const processedDoc = await tx.get(processedRef);
+        if (processedDoc.exists) {
+            deduped = true;
+            return;
+        }
+        if (!userRef) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const userDoc = await tx.get(userRef);
+        if (!userDoc.exists) {
+            await recordProcessedEvent(tx, processedRef, event, firebaseUid, false);
+            return;
+        }
+        const currentCredits = normalizeCreditState(userDoc.data());
+        const nextState = {
+            monthlyCreditsRemaining: 0,
+            bonusCredits: currentCredits.bonusCredits,
+            totalCredits: currentCredits.bonusCredits,
+        };
+        tx.update(userRef, Object.assign(Object.assign({}, buildCreditUpdate(nextState)), { plan: "free", subscriptionStatus: "canceled", stripeSubscriptionId: null, creditsResetAt: null, cancelAtPeriodEnd: null }));
+        await recordProcessedEvent(tx, processedRef, event, firebaseUid || userRef.id, true);
+        change = { before: currentCredits, after: nextState };
+    });
+    if (deduped) {
+        logger.info(`[StripeWebhook] deduped ${event.type} ${event.id}`);
+    }
+    else if (change) {
+        const { before, after } = change;
+        logCreditChange(event, firebaseUid || (userRef ? userRef.id : null), before, after, "subscription_deleted");
+    }
+    else {
+        logger.warn(`[StripeWebhook] ${event.type} ${event.id} no user found (customer=${customerId})`);
+    }
+    return { deduped };
+}
 // ... existing endpoints ...
 app.post("/generateMemberMockups", async (req, res) => {
-    var _a, _b;
+    var _a;
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -896,12 +1205,12 @@ app.post("/generateMemberMockups", async (req, res) => {
         }
         // Check credits
         const userRef = db.collection("users").doc(uid);
-        let credits = 0;
+        let creditState = { monthlyCreditsRemaining: 0, bonusCredits: 0, totalCredits: 0 };
         try {
             console.log(`[MEMBER] Checking credits for user ${uid}`);
             const userDoc = await userRef.get();
-            credits = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.credits) || 0;
-            console.log(`[MEMBER] User has ${credits} credits`);
+            creditState = normalizeCreditState(userDoc.data());
+            console.log(`[MEMBER] User has monthly=${creditState.monthlyCreditsRemaining} bonus=${creditState.bonusCredits} (total=${creditState.totalCredits})`);
         }
         catch (err) {
             console.error(`[MEMBER] Failed to check credits: ${err}`);
@@ -910,8 +1219,8 @@ app.post("/generateMemberMockups", async (req, res) => {
         }
         // Cost is 1 credit per variation
         const cost = numVariations;
-        if (credits < cost) {
-            console.log(`[MEMBER] Insufficient credits: ${credits} < ${cost}`);
+        if (creditState.totalCredits < cost) {
+            console.log(`[MEMBER] Insufficient credits: ${creditState.totalCredits} < ${cost}`);
             res.status(403).json({ ok: false, error: "Insufficient credits" });
             return;
         }
@@ -934,7 +1243,7 @@ app.post("/generateMemberMockups", async (req, res) => {
                     res.status(404).json({ ok: false, error: "Artwork not found" });
                     return;
                 }
-                artworkUrl = (_b = artworkDoc.data()) === null || _b === void 0 ? void 0 : _b.url;
+                artworkUrl = (_a = artworkDoc.data()) === null || _a === void 0 ? void 0 : _a.url;
                 console.log(`[MEMBER] Artwork URL found: ${artworkUrl}`);
             }
             catch (err) {
@@ -999,19 +1308,47 @@ app.post("/generateMemberMockups", async (req, res) => {
         }
         await Promise.all(tasks);
         // Deduct credits
+        let remainingCredits = creditState.totalCredits;
         if (results.length > 0) {
             try {
-                console.log(`[MEMBER] Deducting ${results.length} credits`);
-                await userRef.update({
-                    credits: firestore_2.FieldValue.increment(-results.length)
+                console.log(`[MEMBER] Deducting ${results.length} credits (monthly first)`);
+                const updatedState = await db.runTransaction(async (tx) => {
+                    const doc = await tx.get(userRef);
+                    const current = normalizeCreditState(doc.data());
+                    if (current.totalCredits < results.length) {
+                        throw new Error("INSUFFICIENT_CREDITS");
+                    }
+                    let remainingCost = results.length;
+                    let nextMonthly = current.monthlyCreditsRemaining;
+                    let nextBonus = current.bonusCredits;
+                    const monthlyDeduction = Math.min(nextMonthly, remainingCost);
+                    nextMonthly -= monthlyDeduction;
+                    remainingCost -= monthlyDeduction;
+                    const bonusDeduction = Math.min(nextBonus, remainingCost);
+                    nextBonus -= bonusDeduction;
+                    const nextState = {
+                        monthlyCreditsRemaining: Math.max(0, nextMonthly),
+                        bonusCredits: Math.max(0, nextBonus),
+                        totalCredits: Math.max(0, nextMonthly) + Math.max(0, nextBonus),
+                    };
+                    tx.update(userRef, buildCreditUpdate(nextState));
+                    return nextState;
                 });
-                console.log(`[MEMBER] Credits deducted`);
+                remainingCredits = updatedState.totalCredits;
+                console.log(`[MEMBER] Credits deducted. Remaining total: ${remainingCredits}`);
             }
             catch (err) {
+                if (err.message === "INSUFFICIENT_CREDITS") {
+                    console.error("[MEMBER] Credits became insufficient during processing");
+                    res.status(403).json({ ok: false, error: "Insufficient credits" });
+                    return;
+                }
                 console.error(`[MEMBER] Failed to deduct credits: ${err}`);
+                res.status(500).json({ ok: false, error: "Failed to deduct credits" });
+                return;
             }
         }
-        res.json({ ok: true, results, errors, remainingCredits: credits - results.length });
+        res.json({ ok: true, results, errors, remainingCredits });
     }
     catch (error) {
         logger.error("generateMemberMockups error", error);
@@ -1061,12 +1398,13 @@ app.get("/admin/stats", async (req, res) => {
         let totalCreditsSpent = 0;
         for (const doc of usersSnap.docs) {
             const data = doc.data();
+            const creditState = normalizeCreditState(data);
             const createdAt = (_b = (_a = data.createdAt) === null || _a === void 0 ? void 0 : _a.toDate) === null || _b === void 0 ? void 0 : _b.call(_a);
             if (createdAt && createdAt > sevenDaysAgo) {
                 newUsersLast7Days++;
             }
             // Track credits (approximation based on current balance and plan)
-            totalCreditsGranted += data.credits || 0;
+            totalCreditsGranted += creditState.totalCredits;
         }
         // Count mockups
         let totalMockups = 0;
@@ -1115,12 +1453,15 @@ app.get("/admin/users", async (req, res) => {
         let users = [];
         for (const doc of snapshot.docs) {
             const data = doc.data();
+            const creditState = normalizeCreditState(data);
             const user = {
                 uid: doc.id,
                 email: data.email || "",
                 displayName: data.displayName || "",
                 plan: data.plan || "free",
-                credits: data.credits || 0,
+                credits: creditState.totalCredits,
+                monthlyCreditsRemaining: creditState.monthlyCreditsRemaining,
+                bonusCredits: creditState.bonusCredits,
                 createdAt: ((_c = (_b = (_a = data.createdAt) === null || _a === void 0 ? void 0 : _a.toDate) === null || _b === void 0 ? void 0 : _b.call(_a)) === null || _c === void 0 ? void 0 : _c.toISOString()) || null,
             };
             // Get counts
@@ -1165,6 +1506,7 @@ app.get("/admin/users/:uid", async (req, res) => {
             return;
         }
         const userData = userDoc.data();
+        const creditState = normalizeCreditState(userData);
         // Get artworks and mockups
         const artworksSnap = await db.collection("users").doc(uid).collection("artworks").get();
         const mockupsSnap = await db.collection("users").doc(uid).collection("mockups")
@@ -1187,7 +1529,9 @@ app.get("/admin/users/:uid", async (req, res) => {
                 email: userData.email || "",
                 displayName: userData.displayName || "",
                 plan: userData.plan || "free",
-                credits: userData.credits || 0,
+                credits: creditState.totalCredits,
+                monthlyCreditsRemaining: creditState.monthlyCreditsRemaining,
+                bonusCredits: creditState.bonusCredits,
                 createdAt: ((_c = (_b = (_a = userData.createdAt) === null || _a === void 0 ? void 0 : _a.toDate) === null || _b === void 0 ? void 0 : _b.call(_a)) === null || _c === void 0 ? void 0 : _c.toISOString()) || null,
                 stripeCustomerId: userData.stripeCustomerId || null,
                 subscriptionStatus: userData.subscriptionStatus || null,
@@ -1204,7 +1548,7 @@ app.get("/admin/users/:uid", async (req, res) => {
 });
 // POST /admin/users/:uid/credits - Adjust credits
 app.post("/admin/users/:uid/credits", async (req, res) => {
-    var _a;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const adminUser = await verifyAdmin(req, res);
     if (!adminUser)
         return;
@@ -1220,28 +1564,51 @@ app.post("/admin/users/:uid/credits", async (req, res) => {
             return;
         }
         const userRef = db.collection("users").doc(uid);
-        const userDoc = await userRef.get();
-        if (!userDoc.exists) {
-            res.status(404).json({ ok: false, error: "User not found" });
-            return;
+        let previousState = null;
+        let nextState = null;
+        try {
+            const result = await db.runTransaction(async (tx) => {
+                const snapshot = await tx.get(userRef);
+                if (!snapshot.exists) {
+                    throw new Error("NOT_FOUND");
+                }
+                const current = normalizeCreditState(snapshot.data());
+                const nextBonus = Math.max(0, current.bonusCredits + delta);
+                const updated = {
+                    monthlyCreditsRemaining: current.monthlyCreditsRemaining,
+                    bonusCredits: nextBonus,
+                    totalCredits: current.monthlyCreditsRemaining + nextBonus,
+                };
+                tx.update(userRef, buildCreditUpdate(updated));
+                return { current, updated };
+            });
+            previousState = result.current;
+            nextState = result.updated;
         }
-        const currentCredits = ((_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.credits) || 0;
-        const newCredits = Math.max(0, currentCredits + delta); // Prevent negative credits
-        // Update credits atomically
-        await userRef.update({ credits: newCredits });
+        catch (err) {
+            if ((err === null || err === void 0 ? void 0 : err.message) === "NOT_FOUND") {
+                res.status(404).json({ ok: false, error: "User not found" });
+                return;
+            }
+            throw err;
+        }
         // Create audit log
         await db.collection("creditAdjustments").add({
             userId: uid,
             delta,
             reason,
-            previousCredits: currentCredits,
-            newCredits,
+            previousCredits: (_a = previousState === null || previousState === void 0 ? void 0 : previousState.totalCredits) !== null && _a !== void 0 ? _a : 0,
+            newCredits: (_b = nextState === null || nextState === void 0 ? void 0 : nextState.totalCredits) !== null && _b !== void 0 ? _b : 0,
+            previousMonthlyCreditsRemaining: (_c = previousState === null || previousState === void 0 ? void 0 : previousState.monthlyCreditsRemaining) !== null && _c !== void 0 ? _c : 0,
+            previousBonusCredits: (_d = previousState === null || previousState === void 0 ? void 0 : previousState.bonusCredits) !== null && _d !== void 0 ? _d : 0,
+            newMonthlyCreditsRemaining: (_e = nextState === null || nextState === void 0 ? void 0 : nextState.monthlyCreditsRemaining) !== null && _e !== void 0 ? _e : 0,
+            newBonusCredits: (_f = nextState === null || nextState === void 0 ? void 0 : nextState.bonusCredits) !== null && _f !== void 0 ? _f : 0,
             adminEmail: adminUser.email,
             adminUid: adminUser.uid,
             timestamp: firestore_2.FieldValue.serverTimestamp()
         });
         logger.info(`[Admin] Credit adjustment: ${adminUser.email} adjusted ${uid} by ${delta}. Reason: ${reason}`);
-        res.json({ ok: true, previousCredits: currentCredits, newCredits });
+        res.json({ ok: true, previousCredits: (_g = previousState === null || previousState === void 0 ? void 0 : previousState.totalCredits) !== null && _g !== void 0 ? _g : 0, newCredits: (_h = nextState === null || nextState === void 0 ? void 0 : nextState.totalCredits) !== null && _h !== void 0 ? _h : 0 });
     }
     catch (error) {
         logger.error("[Admin] Credit adjustment error", error);
@@ -1335,13 +1702,13 @@ exports.creditExpirationCheck = (0, scheduler_1.onSchedule)("every day 00:00", a
             // 2. Cleanup for edge cases where webhook might have been missed
             // If subscription is canceling and past reset date, mark as canceled
             if (userData.subscriptionStatus === "canceling") {
-                await userDoc.ref.update({
-                    plan: "free",
-                    subscriptionStatus: "canceled",
-                    stripeSubscriptionId: null,
-                    creditsResetAt: null,
-                    cancelAtPeriodEnd: null
-                });
+                const currentCredits = normalizeCreditState(userData);
+                const nextState = {
+                    monthlyCreditsRemaining: 0,
+                    bonusCredits: currentCredits.bonusCredits,
+                    totalCredits: currentCredits.bonusCredits,
+                };
+                await userDoc.ref.update(Object.assign({ plan: "free", subscriptionStatus: "canceled", stripeSubscriptionId: null, creditsResetAt: null, cancelAtPeriodEnd: null }, buildCreditUpdate(nextState)));
                 resetCount++;
                 logger.info(`[creditExpirationCheck] User ${userDoc.id} subscription expired, set to free`);
             }
@@ -1364,4 +1731,6 @@ exports.creditExpirationCheck = (0, scheduler_1.onSchedule)("every day 00:00", a
         logger.error("[creditExpirationCheck] Error during credit expiration check", error);
     }
 });
+__exportStar(require("./onUserDeleted"), exports);
+__exportStar(require("./scheduled/sendFeedbackEmail"), exports);
 //# sourceMappingURL=index.js.map

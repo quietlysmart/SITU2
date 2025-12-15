@@ -37,8 +37,10 @@ export interface EditMockupRequest {
 export interface UserProfile {
     email: string;
     createdAt: any; // Firestore Timestamp
-    plan: "free" | "monthly" | "3month" | "6month";
-    credits: number;
+    plan: "free" | "monthly" | "quarterly" | "sixMonths";
+    credits?: number;
+    monthlyCreditsRemaining?: number;
+    bonusCredits?: number;
     stripeCustomerId?: string;
     promo?: string;
     displayName?: string;

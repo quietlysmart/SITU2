@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 export function Footer() {
     return (
         <footer className="border-t border-slate-200 bg-slate-50">
-            <div className="container mx-auto px-4 py-12 md:py-16">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
+            <div className="container mx-auto px-4 py-8 md:py-16">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 md:gap-8">
                     <div className="space-y-2">
                         <span className="text-lg font-bold text-slate-900">Situ</span>
                         <p className="text-sm text-slate-500 max-w-xs">
@@ -24,7 +24,7 @@ export function Footer() {
                         </div>
                     </div>
                 </div>
-                <div className="mt-12 pt-8 border-t border-slate-200 text-center md:text-left text-sm text-slate-500">
+                <div className="mt-8 md:mt-12 pt-8 border-t border-slate-200 text-center md:text-left text-sm text-slate-500">
                     © {new Date().getFullYear()} Situ. All rights reserved.
                 </div>
             </div>

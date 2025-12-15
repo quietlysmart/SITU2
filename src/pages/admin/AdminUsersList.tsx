@@ -8,6 +8,8 @@ interface User {
     displayName: string;
     plan: string;
     credits: number;
+    monthlyCreditsRemaining?: number;
+    bonusCredits?: number;
     artworkCount: number;
     mockupCount: number;
     createdAt: string | null;

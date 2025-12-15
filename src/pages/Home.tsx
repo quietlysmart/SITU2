@@ -21,8 +21,9 @@ export function Home() {
             {/* Hero Section */}
             {/* Hero Section */}
             {/* Hero Section */}
-            <section className="relative w-full max-w-7xl mx-auto mt-6 px-4">
-                <div className="relative w-full aspect-video md:aspect-[21/9] lg:aspect-[2.4/1] rounded-3xl overflow-hidden shadow-2xl isolate bg-[#2A2A2A]">
+            {/* Hero Section */}
+            <section className="relative w-full max-w-7xl mx-auto mt-0 md:mt-6 px-0 md:px-4">
+                <div className="relative w-full min-h-[550px] md:min-h-0 md:aspect-[21/9] lg:aspect-[2.4/1] md:rounded-3xl overflow-hidden shadow-2xl isolate bg-[#2A2A2A]">
                     {/* Background Image */}
                     <img
                         src="/images/hero-final.jpg"
@@ -30,18 +31,18 @@ export function Home() {
                         className="absolute inset-0 w-full h-full object-cover -z-20 brightness-75"
                     />
 
-                    {/* Overlay Gradient/Scrim */}
-                    <div className="absolute inset-0 bg-black/30 -z-10"></div>
+                    {/* Overlay Gradient/Scrim - Stronger on mobile for text readability */}
+                    <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/70 md:bg-black/30 md:bg-none -z-10"></div>
 
                     {/* Content */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 md:p-12">
-                        <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight text-white mb-6 font-serif leading-tight animate-fade-in drop-shadow-lg">
+                        <h1 className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight text-white mb-6 font-serif leading-tight animate-fade-in drop-shadow-lg px-2">
                             See your art in the world<br className="hidden md:block" /> in under a minute.
                         </h1>
-                        <p className="text-lg md:text-xl text-white/90 mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-delay-1 drop-shadow-md font-medium">
+                        <p className="text-base sm:text-lg md:text-xl text-white/90 mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-delay-1 drop-shadow-md font-medium px-4">
                             Upload one artwork and get a set of clean, realistic mockups for your socials, portfolio, and shop.
                         </p>
-                        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2">
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2 w-full px-4">
                             <Button
                                 size="lg"
                                 className="w-full sm:w-auto text-lg px-8 py-6 bg-brand-gold text-brand-brown hover:bg-white border-none shadow-xl hover:scale-105 transition-transform duration-200"

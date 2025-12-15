@@ -35,7 +35,9 @@ export function Signup() {
                 displayName: name,
                 createdAt: serverTimestamp(),
                 plan: "free",
-                credits: 12, // Default to 12 credits for everyone (updated from 20)
+                bonusCredits: 12, // Default to 12 bonus credits for everyone (updated from 20)
+                monthlyCreditsRemaining: 0,
+                credits: 12, // Derived total for compatibility
                 ...(promo ? { promo } : {}),
             };
 

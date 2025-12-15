@@ -8,6 +8,8 @@ interface UserDetail {
     displayName: string;
     plan: string;
     credits: number;
+    monthlyCreditsRemaining?: number;
+    bonusCredits?: number;
     createdAt: string | null;
     stripeCustomerId: string | null;
     subscriptionStatus: string | null;
@@ -157,6 +159,14 @@ export function AdminUserDetail() {
                         <div className="flex justify-between">
                             <dt className="text-sm text-slate-500">Credits</dt>
                             <dd className="text-sm font-medium text-slate-900">{userData.credits}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                            <dt className="text-sm text-slate-500">Monthly Remaining</dt>
+                            <dd className="text-sm font-medium text-slate-900">{userData.monthlyCreditsRemaining ?? 0}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                            <dt className="text-sm text-slate-500">Bonus Credits</dt>
+                            <dd className="text-sm font-medium text-slate-900">{userData.bonusCredits ?? 0}</dd>
                         </div>
                         <div className="flex justify-between">
                             <dt className="text-sm text-slate-500">Created</dt>
