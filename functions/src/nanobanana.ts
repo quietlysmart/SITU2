@@ -8,6 +8,7 @@ dotenv.config();
  * Restored to logic from commit 5057605 (Known Good Generation).
  */
 import { resolveProjectId } from "./admin";
+import sharp from "sharp";
 
 const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
 const MODEL_ID = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
@@ -19,11 +20,73 @@ if (!GENAI_API_KEY) {
 console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "Not Set" });
 
 /**
+ * Generate a minimal blank PNG at a specific aspect ratio.
+ * This is used as a "signifier" to force Gemini to output images at the target aspect ratio.
+ */
+function generateBlankPNG(aspectRatio: string): { data: string; width: number; height: number } {
+    const dimensions: Record<string, { width: number; height: number }> = {
+        "1:1": { width: 100, height: 100 },
+        "16:9": { width: 160, height: 90 },
+        "9:16": { width: 90, height: 160 },
+        "4:3": { width: 120, height: 90 },
+        "3:4": { width: 90, height: 120 },
+    };
+
+    const { width, height } = dimensions[aspectRatio] || dimensions["1:1"];
+
+    // Minimal PNG generation logic
+    const signature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+    // IHDR (Small width/height to guide AR)
+    const ihdrData = Buffer.alloc(13);
+    ihdrData.writeUInt32BE(width, 0);
+    ihdrData.writeUInt32BE(height, 4);
+    ihdrData.writeUInt8(8, 8); // bit depth
+    ihdrData.writeUInt8(0, 9); // grayscale
+    ihdrData.writeUInt8(0, 10); // deflate
+    ihdrData.writeUInt8(0, 11); // filter
+    ihdrData.writeUInt8(0, 12); // interlace
+
+    const ihdr = createPNGChunk('IHDR', ihdrData);
+    const iend = createPNGChunk('IEND', Buffer.alloc(0));
+
+    // Tiny IDAT for a black 1x1 image (simplified)
+    const idatData = Buffer.from([0x78, 0x9c, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01]);
+    const idat = createPNGChunk('IDAT', idatData);
+
+    const png = Buffer.concat([signature, ihdr, idat, iend]);
+    return { data: png.toString('base64'), width, height };
+}
+
+function createPNGChunk(type: string, data: Buffer): Buffer {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const typeBuffer = Buffer.from(type, 'ascii');
+    const crc = crc32(Buffer.concat([typeBuffer, data]));
+    const crcBuffer = Buffer.alloc(4);
+    crcBuffer.writeUInt32BE(crc, 0);
+    return Buffer.concat([length, typeBuffer, data, crcBuffer]);
+}
+
+function crc32(data: Buffer): number {
+    let crc = 0xFFFFFFFF;
+    const table: number[] = [];
+    for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        table[i] = c >>> 0;
+    }
+    for (let i = 0; i < data.length; i++) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/**
  * Generate a mockup using the Gemini API.
  * 
- * RESTORED LOGIC + ASPECT RATIO CONFIG:
- * - Tries official aspect ratio config first.
- * - FALLBACK: If API rejects config (400), retries with standard body (Known Good).
+ * TWO-IMAGE STRATEGY:
+ * 1. Sends the user's artwork.
+ * 2. Sends a "Blank PNG" seeding image that matched the target aspect ratio.
+ * 3. Instructs the AI to output at the ratio of the seed image.
  */
 export async function generateCategoryMockup(category: string, artworkUrl: string, customPrompt?: string, aspectRatio?: string): Promise<string | null> {
     try {
@@ -97,7 +160,13 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
         // Generate prompt
         const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork. Clean, modern, high quality, photorealistic, studio lighting.`;
-        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions or conversational text.`.trim();
+
+        let prompt;
+        if (aspectRatio) {
+            prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Your output image MUST match the exact aspect ratio of the SECOND image provided in this prompt (the blank seed). Do not simply match the aspect ratio of the first image (the artwork). Output ONLY the generated image.`.trim();
+        } else {
+            prompt = `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions or conversational text.`.trim();
+        }
         console.log(`[NANOBANANA] Full prompt: ${prompt}`);
 
         // Fetch the artwork image (Securely)
@@ -129,19 +198,30 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
         console.log(`[NANOBANANA] Calling Gemini REST API with model: ${MODEL_ID}`);
 
-        // Prepare Request Bodies
-        const contents = [{
-            parts: [
-                { text: prompt },
-                { inline_data: { mime_type: mimeType, data: imageBase64 } }
-            ]
-        }];
+        // Prepare Multi-modal Parts
+        const parts: any[] = [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: imageBase64 } } // Part 1: Artwork
+        ];
 
-        const standardBody = { contents };
+        if (aspectRatio) {
+            const seed = generateBlankPNG(aspectRatio);
+            console.log(`[NANOBANANA] Seeding with ${aspectRatio} blank PNG (${seed.width}x${seed.height})`);
+            parts.push({ inline_data: { mime_type: "image/png", data: seed.data } }); // Part 2: Seed Image
+        }
+
+        const standardBody = { contents: [{ parts }] };
+        const ratioBody = aspectRatio ? {
+            ...standardBody,
+            generationConfig: { aspectRatio } // Keep formal config as secondary reinforcement
+        } : standardBody;
+
+        // Force Gemini 2.5 for specific aspect ratios
+        const effectiveModelId = aspectRatio ? "gemini-2.5-flash-image" : MODEL_ID;
 
         // Helper to make the request with retry logic
-        const makeRequestWithRetry = async (prefix: string, body: any, maxRetries = 3): Promise<Response> => {
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${MODEL_ID}:generateContent?key=${GENAI_API_KEY}`;
+        const makeRequestWithRetry = async (prefix: string, body: any, modelToUse: string, maxRetries = 3): Promise<Response> => {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${modelToUse}:generateContent?key=${GENAI_API_KEY}`;
 
             let lastError: any;
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -187,12 +267,23 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             throw lastError || new Error("Max retries exceeded");
         };
 
-        // Execution Strategy: Use standard body (Known Good)
-        let response = await makeRequestWithRetry("models", standardBody);
+        // Execution Strategy: Try with aspect ratio config (if requested) using Gemini 2.5
+        let response = await makeRequestWithRetry("models", ratioBody, effectiveModelId);
+
+        // Fallback: If 400 (Bad Config) or 404, retry with standard prompt-only logic
+        if (response.status === 400 && aspectRatio) {
+            console.warn(`[NANOBANANA] AR config rejected (400). Retrying with prompt-only fallback...`);
+            response = await makeRequestWithRetry("models", standardBody, MODEL_ID);
+        }
 
         if (response.status === 404) {
             console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/'...`);
-            response = await makeRequestWithRetry("tunedModels", standardBody);
+            response = await makeRequestWithRetry("tunedModels", aspectRatio ? ratioBody : standardBody, effectiveModelId);
+
+            if (response.status === 400 && aspectRatio) {
+                console.warn(`[NANOBANANA] AR config rejected (400) on tunedModels. Retrying with prompt-only fallback...`);
+                response = await makeRequestWithRetry("tunedModels", standardBody, MODEL_ID);
+            }
         }
 
         if (!response.ok) {
@@ -220,6 +311,16 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
                 const rMimeType = inlineData.mime_type || inlineData.mimeType || "image/png";
 
                 console.log(`[NANOBANANA] PROOF - Image Bytes Found: ${base64Image.length}`);
+
+                // PIXEL LEVEL VERIFICATION
+                try {
+                    const buf = Buffer.from(base64Image, 'base64');
+                    const metadata = await sharp(buf).metadata();
+                    console.log(`[NANOBANANA] PIXEL PROOF - Dimensions: ${metadata.width}x${metadata.height} (Aspect Ratio: ${(metadata.width! / metadata.height!).toFixed(2)})`);
+                } catch (err) {
+                    console.warn(`[NANOBANANA] Could not verify pixel dimensions:`, err);
+                }
+
                 return `data:${rMimeType};base64,${base64Image}`;
             } else {
                 console.log(`[NANOBANANA] PROOF - NO IMAGE DATA found in parts.`);

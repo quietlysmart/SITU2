@@ -39,5 +39,13 @@ This document serves as a reference for any coding agents working on the SITU pr
 - **Proper Awaiting:** The `/generateMemberMockups` handler now explicitly `await`s the asynchronous generation task. This ensures the function instance remains active until the image is created, storage is updated, and credits are deducted, even if a 202 response was already sent to the frontend.
 - **Single Response Guard:** Maintained a `responded` flag to ensure the function only sends one HTTP response (either the 200 success or the 202 background status).
 
+## 6. NanoBanana: Aspect Ratio Ignored
+**Problem:** The image generator would always output the aspect ratio of the original artwork, ignoring the user's selection in Member Studio. This was because the `aspectRatio` was only included in the text prompt, not as a formal API configuration parameter.
+
+**Fixed Strategy:**
+- **Forced Model Routing:** Requests requiring specific aspect ratios are now automatically routed to `gemini-2.5-flash-image` (the "signifier" for the compatible path).
+- **Formal Config:** The API request now includes a `generationConfig` block with the formal `aspectRatio` parameter.
+- **Resilient Fallback:** If the API rejects the configuration (400 error), the system automatically falls back to a standard prompt-only request to ensure generation still succeeds.
+
 ---
 **Note:** Always ensure `npm run build` completes successfully before a `firebase deploy` to maintain stack consistency.
