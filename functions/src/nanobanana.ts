@@ -20,65 +20,36 @@ if (!GENAI_API_KEY) {
 console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "Not Set" });
 
 /**
- * Generate a minimal blank PNG at a specific aspect ratio.
- * This is used as a "signifier" to force Gemini to output images at the target aspect ratio.
+ * Generate a minimal blank PNG at a specific aspect ratio using sharp.
  */
-function generateBlankPNG(aspectRatio: string): { data: string; width: number; height: number } {
+async function generateBlankPNG(aspectRatio: string): Promise<{ data: string; width: number; height: number }> {
     const dimensions: Record<string, { width: number; height: number }> = {
-        "1:1": { width: 100, height: 100 },
-        "16:9": { width: 160, height: 90 },
-        "9:16": { width: 90, height: 160 },
-        "4:3": { width: 120, height: 90 },
-        "3:4": { width: 90, height: 120 },
+        "1:1": { width: 512, height: 512 },
+        "16:9": { width: 896, height: 512 },
+        "9:16": { width: 512, height: 896 },
+        "4:3": { width: 640, height: 480 },
+        "3:4": { width: 480, height: 640 },
     };
 
     const { width, height } = dimensions[aspectRatio] || dimensions["1:1"];
 
-    // Minimal PNG generation logic
-    const signature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    // Use sharp to create a neutral gray 1x1 image and resize it to the target dimensions
+    // This ensures a valid, high-quality placeholder for the AI to follow.
+    const buffer = await sharp({
+        create: {
+            width: width,
+            height: height,
+            channels: 3,
+            background: { r: 128, g: 128, b: 128 }
+        }
+    })
+        .png()
+        .toBuffer();
 
-    // IHDR (Small width/height to guide AR)
-    const ihdrData = Buffer.alloc(13);
-    ihdrData.writeUInt32BE(width, 0);
-    ihdrData.writeUInt32BE(height, 4);
-    ihdrData.writeUInt8(8, 8); // bit depth
-    ihdrData.writeUInt8(0, 9); // grayscale
-    ihdrData.writeUInt8(0, 10); // deflate
-    ihdrData.writeUInt8(0, 11); // filter
-    ihdrData.writeUInt8(0, 12); // interlace
-
-    const ihdr = createPNGChunk('IHDR', ihdrData);
-    const iend = createPNGChunk('IEND', Buffer.alloc(0));
-
-    // Tiny IDAT for a black 1x1 image (simplified)
-    const idatData = Buffer.from([0x78, 0x9c, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01]);
-    const idat = createPNGChunk('IDAT', idatData);
-
-    const png = Buffer.concat([signature, ihdr, idat, iend]);
-    return { data: png.toString('base64'), width, height };
+    return { data: buffer.toString('base64'), width, height };
 }
 
-function createPNGChunk(type: string, data: Buffer): Buffer {
-    const length = Buffer.alloc(4);
-    length.writeUInt32BE(data.length, 0);
-    const typeBuffer = Buffer.from(type, 'ascii');
-    const crc = crc32(Buffer.concat([typeBuffer, data]));
-    const crcBuffer = Buffer.alloc(4);
-    crcBuffer.writeUInt32BE(crc, 0);
-    return Buffer.concat([length, typeBuffer, data, crcBuffer]);
-}
-
-function crc32(data: Buffer): number {
-    let crc = 0xFFFFFFFF;
-    const table: number[] = [];
-    for (let i = 0; i < 256; i++) {
-        let c = i;
-        for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-        table[i] = c >>> 0;
-    }
-    for (let i = 0; i < data.length; i++) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
-    return (crc ^ 0xFFFFFFFF) >>> 0;
-}
+// Helpers removed in favor of sharp
 
 /**
  * Generate a mockup using the Gemini API.
@@ -198,23 +169,35 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
         console.log(`[NANOBANANA] Calling Gemini REST API with model: ${MODEL_ID}`);
 
-        // Prepare Multi-modal Parts
-        const parts: any[] = [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: imageBase64 } } // Part 1: Artwork
-        ];
+        // Part 1: Always include the artwork
+        const artworkPart = { inline_data: { mime_type: mimeType, data: imageBase64 } };
 
+        // Prepare the "Standard" (Known Good) body - ALWAYS one image, one prompt
+        const standardContents = [{
+            parts: [
+                { text: `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image.`.trim() },
+                artworkPart
+            ]
+        }];
+        const standardBody = { contents: standardContents };
+
+        // Prepare the "Ratio" body - uses the seed PNG hack
+        let ratioBody: any = standardBody;
         if (aspectRatio) {
-            const seed = generateBlankPNG(aspectRatio);
+            const seed = await generateBlankPNG(aspectRatio);
             console.log(`[NANOBANANA] Seeding with ${aspectRatio} blank PNG (${seed.width}x${seed.height})`);
-            parts.push({ inline_data: { mime_type: "image/png", data: seed.data } }); // Part 2: Seed Image
-        }
 
-        const standardBody = { contents: [{ parts }] };
-        const ratioBody = aspectRatio ? {
-            ...standardBody,
-            generationConfig: { aspectRatio } // Keep formal config as secondary reinforcement
-        } : standardBody;
+            ratioBody = {
+                contents: [{
+                    parts: [
+                        { text: prompt }, // The enhanced prompt targeting the seed
+                        artworkPart,
+                        { inline_data: { mime_type: "image/png", data: seed.data } } // The seed
+                    ]
+                }],
+                generationConfig: { aspectRatio } // Formal parameter as secondary reinforcement
+            };
+        }
 
         // Force Gemini 2.5 for specific aspect ratios
         const effectiveModelId = aspectRatio ? "gemini-2.5-flash-image" : MODEL_ID;
