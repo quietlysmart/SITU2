@@ -16,6 +16,12 @@ export function Footer() {
                             <span className="font-semibold text-slate-900">Product</span>
                             <Link to="/studio" className="hover:text-slate-900">Guest Studio</Link>
                             <Link to="/pricing" className="hover:text-slate-900">Pricing</Link>
+                            <a
+                                href={`mailto:hello@floobcreative.com?subject=${encodeURIComponent("Situ support")}&body=${encodeURIComponent("Please share details about your issue. Include your email and UID if known. RequestId: ")}`}
+                                className="hover:text-slate-900"
+                            >
+                                Contact Us
+                            </a>
                         </div>
                         <div className="flex flex-col gap-2">
                             <span className="font-semibold text-slate-900">Legal</span>

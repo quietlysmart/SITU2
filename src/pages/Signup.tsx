@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import type { UserProfile } from "../types";
 
 export function Signup() {
     const [name, setName] = useState("");
@@ -17,6 +16,33 @@ export function Signup() {
     const promo = searchParams.get("promo");
     const guestSessionId = searchParams.get("guestSession");
 
+    const waitForProfile = async (uid: string, timeoutMs = 10000) => {
+        const profileRef = doc(db, "users", uid);
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const snap = await getDoc(profileRef);
+            if (snap.exists()) return true;
+            await new Promise(res => setTimeout(res, 500));
+        }
+        throw new Error("Profile not ready yet");
+    };
+
+    const ensureProfile = async (user: any) => {
+        try {
+            const token = await user.getIdToken(true);
+            const apiUrl = import.meta.env.PROD ? "/api/user/ensureProfile" : `${import.meta.env.VITE_API_BASE_URL}/user/ensureProfile`;
+            await fetch(apiUrl, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+        } catch (err) {
+            console.warn("ensureProfile call failed", err);
+        }
+    };
+
     const handleSignup = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -25,45 +51,18 @@ export function Signup() {
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
+            const storageKeys = Object.keys(window.localStorage || {}).filter(k => k.toLowerCase().includes("firebase"));
+            console.log("[Signup] created user", { uid: user.uid, storageKeys });
 
             // Update Auth Profile
             await updateProfile(user, { displayName: name });
-
-            // Create user profile in Firestore
-            const profile: UserProfile = {
-                email: user.email!,
-                displayName: name,
-                createdAt: serverTimestamp(),
-                plan: "free",
-                bonusCredits: 12, // Default to 12 bonus credits for everyone (updated from 20)
-                monthlyCreditsRemaining: 0,
-                credits: 12, // Derived total for compatibility
-                ...(promo ? { promo } : {}),
-            };
-
-            console.log("Creating Firestore profile for:", user.uid);
-
-            // Attempt to create profile with a timeout
-            const createProfilePromise = setDoc(doc(db, "users", user.uid), profile);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Profile creation timed out")), 5000));
-
-            try {
-                await Promise.race([createProfilePromise, timeoutPromise]);
-                console.log("Profile created successfully");
-
-                // Trigger Welcome Email (now handled by Backend Firestore Trigger on creation)
-                // But if we wanted to be double sure or explicit, we rely on the trigger.
-
-            } catch (profileError) {
-                console.error("Profile creation failed or timed out:", profileError);
-                // We continue anyway because the Auth account is created. 
-            }
+            await ensureProfile(user);
 
             // Claim Guest Session if present
             if (guestSessionId) {
                 try {
                     console.log("Claiming guest session:", guestSessionId);
-                    const token = await user.getIdToken();
+                    const token = await user.getIdToken(true);
                     const claimRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/claimGuestSession`, {
                         method: "POST",
                         headers: {
@@ -115,6 +114,12 @@ export function Signup() {
                 } catch (checkoutErr) {
                     console.error("Error starting pending plan checkout:", checkoutErr);
                 }
+            }
+
+            try {
+                await waitForProfile(user.uid);
+            } catch (profileErr) {
+                console.warn("Profile not ready after signup yet:", profileErr);
             }
 
             navigate("/member/studio");

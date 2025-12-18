@@ -41,15 +41,15 @@ export function AccountSettings() {
             const unsubscribe = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                const planName = data.plan === "monthly" ? "Monthly Subscription" :
-                    data.plan === "quarterly" ? "Quarterly Subscription" :
-                        data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
-                setPlan(planName);
-                setCredits(computeCredits(data));
-                setSubscriptionStatus(data.subscriptionStatus || null);
-                setCreditsResetAt(data.creditsResetAt?.toDate?.() || null);
-            }
-        });
+                    const planName = data.plan === "monthly" ? "Monthly Subscription" :
+                        data.plan === "quarterly" ? "Quarterly Subscription" :
+                            data.plan === "sixMonths" ? "Biannual Subscription" : "Free Plan";
+                    setPlan(planName);
+                    setCredits(computeCredits(data));
+                    setSubscriptionStatus(data.subscriptionStatus || null);
+                    setCreditsResetAt(data.creditsResetAt?.toDate?.() || null);
+                }
+            });
 
             return () => unsubscribe();
         }
@@ -149,9 +149,17 @@ export function AccountSettings() {
                 throw new Error(data.error || "Failed to cancel subscription");
             }
 
+            console.log("[AccountSettings] cancelSubscription success", {
+                requestId: data.requestId,
+                cancelAtPeriodEnd: data.cancelAtPeriodEnd,
+                cancelAt: data.cancelAt,
+                currentPeriodEnd: data.currentPeriodEnd,
+                stripeId: data.stripeResponse?.id
+            });
+
             setMessage({
                 type: "success",
-                text: "Subscription canceled. You'll keep access until the end of your billing period."
+                text: `Subscription canceled. Access ends: ${data.currentPeriodEnd ? new Date(data.currentPeriodEnd).toLocaleDateString() : 'end of period'}. (Ref: ${data.requestId})`
             });
         } catch (error: any) {
             console.error("Cancel subscription error:", error);

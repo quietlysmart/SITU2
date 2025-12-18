@@ -7,6 +7,8 @@ dotenv.config();
  * ================================
  * Restored to logic from commit 5057605 (Known Good Generation).
  */
+import { resolveProjectId } from "./admin";
+
 const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
 const MODEL_ID = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 
@@ -34,15 +36,19 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
                 const parsed = new URL(url);
                 if (parsed.protocol !== "https:") throw new Error("Protocol must be https");
 
+                const projectID = resolveProjectId() || "situ-477910";
                 const allowedHosts = [
                     "firebasestorage.googleapis.com",
                     "storage.googleapis.com",
-                    "situ-477910.firebasestorage.app" // Hardcoded bucket for stability, or use logic if env avail
+                    `${projectID}.firebasestorage.app`,
+                    `${projectID}.appspot.com`,
+                    "firebasestorage.googleapis.com",
+                    "storage.googleapis.com"
                 ];
 
                 // Allow env var overrides if present
                 if (process.env.ALLOWED_IMAGE_HOSTS) {
-                    allowedHosts.push(...process.env.ALLOWED_IMAGE_HOSTS.split(",").map(h => h.trim()));
+                    allowedHosts.push(...process.env.ALLOWED_IMAGE_HOSTS.split(",").map(h => h.trim().toLowerCase()));
                 }
 
                 if (!allowedHosts.includes(parsed.hostname.toLowerCase())) {
@@ -51,12 +57,13 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
                 // Path traversal check for shared hosts
                 if (parsed.hostname === "firebasestorage.googleapis.com" || parsed.hostname === "storage.googleapis.com") {
-                    // Must contain our bucket name (situ-477910)
-                    if (!parsed.pathname.includes("situ-477910")) {
-                        throw new Error("URL must point to Situ storage bucket");
+                    // Must contain our project ID
+                    if (!parsed.pathname.includes(projectID)) {
+                        throw new Error(`URL must point to ${projectID} storage bucket`);
                     }
                 }
             } catch (e: any) {
+                console.error(`[NANOBANANA] SSRF Validation failed for ${url}:`, e.message);
                 throw new Error(`Security validation failed: ${e.message}`);
             }
         };
@@ -66,7 +73,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
         const PRODUCT_PROMPTS: Record<string, string> = {
             "wall": "Ultra-realistic interior design photo of framed wall art in a stylish, modern room. Dramatic natural lighting casting soft shadows. The provided artwork is the focal point, framed elegantly on the wall. High-end furniture and decor in the background, cinematic composition.",
             "prints": "High-end lifestyle photography of art prints arranged on a desk or table. Overhead or slight three-quarter view. Multiple prints clearly on paper, maybe a few overlapping, plus a few small props (pens, clips, etc.). Still ultra-realistic, nice shallow depth of field. Soft, warm lighting. The provided artwork is the main focus.",
-            "wearable": "Ultra-realistic fashion photography of a real person wearing the provided artwork as apparel. The item could be a t-shirt, hoodie, dress, hat, or accessory as appropriate. The model is in a natural, lifestyle setting (e.g., street, cafe, or studio) with dramatic lighting. The artwork is clearly visible on the fabric. High-end fashion editorial style.",
+            "wearable": "GENERATE AN IMAGE OF A REAL PERSON wearing the provided artwork as apparel (t-shirt, hoodie, or hat). High-end fashion photography style, ultra-realistic, natural lifestyle setting, dramatic lighting. The artwork MUST be clearly visible on the fabric.",
             "phone": "Ultra-realistic lifestyle shot of a smartphone with a custom case featuring the provided artwork. Held by a hand or resting on a textured surface (wood, marble). Shallow depth of field, focusing on the case design. Modern and sleek.",
             "mug": "Cozy lifestyle photography of a ceramic mug featuring the provided artwork. Placed on a wooden table with coffee beans, a book, or a laptop nearby. Warm, inviting lighting with steam rising. Realistic ceramic texture and reflections.",
             "tote": "Street-style photography of a person carrying a canvas tote bag with the provided artwork. Natural outdoor lighting or trendy indoor setting. The bag is the focus, showing realistic fabric texture and weight. Casual and stylish.",
@@ -90,7 +97,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
         // Generate prompt
         const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork. Clean, modern, high quality, photorealistic, studio lighting.`;
-        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "IMPORTANT: " + customPrompt : ""} The output image MUST match the exact aspect ratio specified.`.trim();
+        const prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions or conversational text.`.trim();
         console.log(`[NANOBANANA] Full prompt: ${prompt}`);
 
         // Fetch the artwork image (Securely)
@@ -131,16 +138,6 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
         }];
 
         const standardBody = { contents };
-
-        const configBody = {
-            contents,
-            generationConfig: {
-                responseModalities: ["IMAGE"],
-                imageConfig: {
-                    aspectRatio: aspectRatio || "1:1"
-                }
-            }
-        };
 
         // Helper to make the request with retry logic
         const makeRequestWithRetry = async (prefix: string, body: any, maxRetries = 3): Promise<Response> => {
@@ -190,40 +187,23 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             throw lastError || new Error("Max retries exceeded");
         };
 
-        // Execution Strategy:
-        // 1. Try 'models' with config (Official AR support)
-        // 2. If 400, try 'models' without config (Fallback to baseline)
-        // 3. If 404, repeat logic for 'tunedModels' (unlikely but preserved)
+        // Execution Strategy: Use standard body (Known Good)
+        let response = await makeRequestWithRetry("models", standardBody);
 
-        let response: Response;
-        let usedConfig = true;
-
-        // Try standard model with config
-        response = await makeRequestWithRetry("models", configBody);
-
-        if (response.status === 400) {
-            console.warn(`[NANOBANANA] API rejected config (400). Fallback to standard request.`);
-            response = await makeRequestWithRetry("models", standardBody);
-            usedConfig = false;
-        } else if (response.status === 404) {
+        if (response.status === 404) {
             console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/'...`);
-            // Try tuned with config
-            response = await makeRequestWithRetry("tunedModels", configBody);
-            if (response.status === 400) {
-                console.warn(`[NANOBANANA] Tuned Model rejected config. Fallback.`);
-                response = await makeRequestWithRetry("tunedModels", standardBody);
-                usedConfig = false;
-            }
+            response = await makeRequestWithRetry("tunedModels", standardBody);
         }
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[NANOBANANA] API Error: ${response.status} ${errorText}`);
-            throw new Error(`Gemini API Error: ${response.status} ${errorText}`);
+            console.error(`[NANOBANANA] API Error Status: ${response.status}`);
+            console.error(`[NANOBANANA] API Error Body: ${errorText.substring(0, 500)}`);
+            throw new Error(`Gemini API Error: ${response.status} ${errorText.substring(0, 200)}`);
         }
 
         const data = await response.json();
-        console.log(`[NANOBANANA] API Response received (Config used: ${usedConfig})`);
+        console.log(`[NANOBANANA] API Response received`);
 
         // PROOF LOGGING: Response Parsing
         if (data.candidates && data.candidates.length > 0) {
@@ -244,13 +224,14 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             } else {
                 console.log(`[NANOBANANA] PROOF - NO IMAGE DATA found in parts.`);
                 const textPart = parts.find((p: any) => p.text);
-                if (textPart) console.log(`[NANOBANANA] Text: "${textPart.text.substring(0, 200)}..."`);
+                const textSnippet = textPart ? textPart.text.substring(0, 100) : "none";
+                throw new Error(`AI returned text but no image. Snippet: ${textSnippet}`);
             }
         } else {
-            console.log(`[NANOBANANA] PROOF - No candidates found.`);
+            const finishReason = data.candidates?.[0]?.finishReason;
+            console.log(`[NANOBANANA] PROOF - No candidates found. Reason: ${finishReason}`);
+            throw new Error(`AI refused to generate image. Reason: ${finishReason || "unknown"}`);
         }
-
-        return null;
 
     } catch (error: any) {
         console.error("[NANOBANANA] Error in generateCategoryMockup:", error);

@@ -30,3 +30,7 @@ dist-ssr
 .env
 .env.*
 functions/.env
+
+firebase-deploy-debug.txt
+firebase-debug.log
+firebase-debug.*.log

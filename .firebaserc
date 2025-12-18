@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "situ-477910"
-  }
+  },
+  "targets": {
+    "situ-477910": {
+      "hosting": {
+        "default": [
+          "situ-477910"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

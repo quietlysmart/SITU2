@@ -29,6 +29,12 @@ export function Navbar() {
                         {!user && <Link to="/guest" className="hover:text-brand-brown transition-colors">Guest Studio</Link>}
                         {user && <Link to="/member/studio" className="hover:text-brand-brown transition-colors">Studio</Link>}
                     </nav>
+                    {/* Mobile quick links */}
+                    <nav className="flex md:hidden items-center gap-4 text-sm font-medium text-brand-brown/80">
+                        <Link to="/pricing" className="hover:text-brand-brown transition-colors">Pricing</Link>
+                        {!user && <Link to="/guest" className="hover:text-brand-brown transition-colors">Guest Studio</Link>}
+                        {user && <Link to="/member/studio" className="hover:text-brand-brown transition-colors">Studio</Link>}
+                    </nav>
                 </div>
                 <div className="flex items-center gap-4">
                     {user ? (

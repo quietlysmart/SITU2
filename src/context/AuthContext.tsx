@@ -16,6 +16,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
+            const storageKeys = Object.keys(window.localStorage || {}).filter(k => k.toLowerCase().includes("firebase"));
+            console.log("[AuthContext] onAuthStateChanged", {
+                uid: user?.uid || null,
+                providerIds: user?.providerData?.map(p => p.providerId),
+                storageKeys
+            });
             setUser(user);
             setLoading(false);
         });

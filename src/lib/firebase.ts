@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
 import { initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
@@ -19,6 +19,12 @@ if (!isConfigValid) {
     console.warn("Firebase config is missing or incomplete. Please check your .env file. Firebase features will be disabled.");
 }
 
+// Project ID Validation
+const EXPECTED_PROJECT_ID = "situ-477910";
+if (firebaseConfig.projectId && firebaseConfig.projectId !== EXPECTED_PROJECT_ID) {
+    console.error(`[Firebase] PROJECT ID MISMATCH! Expected ${EXPECTED_PROJECT_ID}, got ${firebaseConfig.projectId}. Critical failure imminent.`);
+}
+
 // Initialize Firebase with error handling
 let app: any;
 let auth: any;
@@ -28,6 +34,10 @@ let storage: any;
 try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
+    setPersistence(auth, browserLocalPersistence).catch(err => {
+        console.warn("[Firebase] Failed to set local persistence", err);
+    });
+    console.log("[Firebase] initialized", { projectId: firebaseConfig.projectId, authDomain: firebaseConfig.authDomain });
     // db = getFirestore(app);
     // Use initializeFirestore to force long polling and avoid QUIC errors
     db = initializeFirestore(app, { experimentalForceLongPolling: true });

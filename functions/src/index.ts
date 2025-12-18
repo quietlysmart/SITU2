@@ -12,37 +12,125 @@ import * as crypto from "crypto";
 import { generateCategoryMockup } from "./nanobanana";
 import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
 import { emailService } from "./emailService";
-
-admin.initializeApp({
-    projectId: "situ-477910",
-    storageBucket: "situ-477910.firebasestorage.app"
-});
-const db = admin.firestore();
-const bucket = admin.storage().bucket();
+import { purgeUserByUidOrEmail } from "./purgeHelper";
+import { db, auth, resolveProjectId, getStorageBucketName } from "./admin";
+import * as functions from "firebase-functions";
+import util from "util";
 
 // Note: URLs are validated lazily on usage to prevent deploy-time errors.
 
-const STORAGE_BUCKET_NAME = bucket.name.toLowerCase();
-const ALLOWED_IMAGE_HOSTS = new Set(
-    [
-        "firebasestorage.googleapis.com",
-        "storage.googleapis.com",
-        STORAGE_BUCKET_NAME,
-        ...(process.env.ALLOWED_IMAGE_HOSTS || "")
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
+
+let _allowedImageHosts: Set<string> | null = null;
+function getAllowedImageHosts(): Set<string> {
+    if (!_allowedImageHosts) {
+        const extraHosts = (process.env.ALLOWED_IMAGE_HOSTS || "")
             .split(",")
             .map(h => h.trim().toLowerCase())
-            .filter(Boolean),
-    ]
-);
+            .filter(Boolean);
+        _allowedImageHosts = new Set([
+            "firebasestorage.googleapis.com",
+            "storage.googleapis.com",
+            getStorageBucketName(),
+            ...extraHosts
+        ]);
+    }
+    return _allowedImageHosts;
+}
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
+function isImageHostAllowed(host: string): boolean {
+    return getAllowedImageHosts().has(host.toLowerCase());
+}
 
 // Admin verification helper
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "").split(",").map(e => e.trim().toLowerCase());
 
-function isAdmin(email: string | undefined): boolean {
+function isAdminEmail(email: string | undefined): boolean {
     if (!email) return false;
     return ADMIN_EMAILS.includes(email.toLowerCase());
+}
+
+function hasAdminAccess(decodedToken: admin.auth.DecodedIdToken | undefined): boolean {
+    if (!decodedToken) return false;
+    if (decodedToken.admin === true || (decodedToken as any).claims?.admin === true) return true;
+    return isAdminEmail(decodedToken.email);
+}
+
+function safeJson(value: any, maxLength = 4000): string {
+    const seen = new WeakSet();
+    const replacer = (_key: string, val: any) => {
+        if (typeof val === "bigint") return val.toString();
+        if (val instanceof Error) return { message: val.message, stack: val.stack };
+        if (typeof val === "object" && val !== null) {
+            if (seen.has(val)) return "[Circular]";
+            seen.add(val);
+        }
+        if (typeof val === "string" && val.length > 512) return `${val.slice(0, 512)}...<truncated>`;
+        return val;
+    };
+
+    try {
+        const str = JSON.stringify(value, replacer);
+        if (!str) return "";
+        return str.length > maxLength ? `${str.slice(0, maxLength)}...<truncated>` : str;
+    } catch (err: any) {
+        try {
+            const inspected = util.inspect(value, { depth: 2, breakLength: 120 });
+            return inspected.length > maxLength ? `${inspected.slice(0, maxLength)}...<truncated>` : inspected;
+        } catch {
+            return "[Unserializable]";
+        }
+    }
+}
+
+function safeLog(level: "info" | "warn" | "error", message: string, meta?: any) {
+    try {
+        if (meta === undefined) {
+            if (level === "error") console.error(message);
+            else if (level === "warn") console.warn(message);
+            else console.log(message);
+            return;
+        }
+        const serialized = safeJson(meta);
+        if (level === "error") console.error(message, serialized);
+        else if (level === "warn") console.warn(message, serialized);
+        else console.log(message, serialized);
+    } catch (err: any) {
+        console.error("[ensureProfile] logging failed", err?.message || err);
+    }
+}
+
+function decodeTokenMetadata(idToken: string) {
+    try {
+        const parts = idToken.split(".");
+        if (parts.length < 2) return null;
+        const payload = Buffer.from(parts[1], "base64").toString("utf8");
+        const parsed = JSON.parse(payload);
+        return {
+            aud: parsed?.aud,
+            iss: parsed?.iss,
+            sign_in_provider: parsed?.firebase?.sign_in_provider,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function buildDefaultProfile(uid: string, email = "", displayName = "", emailVerified = false) {
+    return {
+        email,
+        displayName,
+        emailVerified,
+        plan: "free",
+        bonusCredits: 12,
+        monthlyCreditsRemaining: 0,
+        credits: 12,
+        isAdmin: false,
+        subscriptionStatus: null,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        creditsResetAt: null,
+    };
 }
 
 const app = express();
@@ -68,7 +156,225 @@ app.use((req, res, next) => {
 });
 
 app.get("/health", (req, res) => {
-    res.json({ ok: true, env: "production", timestamp: new Date().toISOString() });
+    res.json({
+        ok: true,
+        env: "production",
+        timestamp: new Date().toISOString(),
+        projectId: resolveProjectId()
+    });
+});
+
+// Ensure profile for signed-in user (fallback if auth trigger missed)
+app.post("/user/ensureProfile", async (req, res) => {
+    const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+    const authHeader = req.headers.authorization;
+    const idToken = authHeader?.startsWith("Bearer ") ? authHeader.split("Bearer ")[1]?.trim() : null;
+    const tokenMeta = idToken ? decodeTokenMetadata(idToken) : null;
+    safeLog("info", "[ensureProfile] start", { requestId, hasAuth: !!authHeader, tokenMeta });
+
+    if (!idToken) {
+        safeLog("warn", "[ensureProfile] missing auth header", { requestId });
+        res.status(401).json({ ok: false, error: "unauthenticated", requestId });
+        return;
+    }
+
+    let decoded: admin.auth.DecodedIdToken;
+    try {
+        decoded = await auth.verifyIdToken(idToken);
+    } catch (err: any) {
+        safeLog("warn", "[ensureProfile] token verification failed", { requestId, error: err?.message, code: err?.code, tokenMeta });
+        res.status(401).json({ ok: false, error: "unauthenticated", requestId });
+        return;
+    }
+
+    let authUser: admin.auth.UserRecord | null = null;
+    let fallbackEmail = decoded.email || "";
+    let fallbackName = decoded.name || "";
+    let fallbackVerified = decoded.email_verified || false;
+
+    // Check if doc exists FIRST to avoid unnecessary getUser call (which might fail due to 403)
+    const userRef = db.collection("users").doc(decoded.uid);
+    const snap = await userRef.get();
+
+    if (snap.exists) {
+        // Just run reparative logic
+        try {
+            let repaired = false;
+            let creditsTotal = 0;
+            const data = snap.data() || {};
+            const creditState = normalizeCreditState(data);
+            creditsTotal = typeof data.credits === "number" ? Math.max(0, data.credits) : creditState.totalCredits;
+
+            const update: Record<string, any> = {};
+            if (typeof data.bonusCredits !== "number") { update.bonusCredits = creditState.bonusCredits; repaired = true; }
+            if (typeof data.monthlyCreditsRemaining !== "number") { update.monthlyCreditsRemaining = creditState.monthlyCreditsRemaining; repaired = true; }
+            if (typeof data.credits !== "number") { update.credits = creditState.totalCredits; repaired = true; creditsTotal = creditState.totalCredits; }
+            if (data.plan === undefined) { update.plan = "free"; repaired = true; }
+            if (!data.email && fallbackEmail) { update.email = fallbackEmail; repaired = true; }
+
+            if (Object.keys(update).length > 0) {
+                update.updatedAt = FieldValue.serverTimestamp();
+                await userRef.set(update, { merge: true });
+            }
+            res.json({ ok: true, created: false, repaired, credits: creditsTotal, requestId, projectId: resolveProjectId() });
+            return;
+        } catch (err: any) {
+            safeLog("error", "[ensureProfile] reparative logic failed", { requestId, uid: decoded.uid, error: err?.message });
+            // continue to full logic if simple update fails
+        }
+    }
+
+    try {
+        authUser = await auth.getUser(decoded.uid);
+    } catch (err: any) {
+        const code = err?.code || "";
+        const message = err?.message || "";
+        if (message.includes("serviceusage") || message.includes("permission") || message.includes("403")) {
+            safeLog("warn", "[ensureProfile] auth.getUser permission error. Proceeding with token fallback.", { requestId, uid: decoded.uid });
+        } else {
+            safeLog("error", "[ensureProfile] failed to load auth user", { requestId, error: message, code, uid: decoded.uid });
+            const status = code === "auth/user-not-found" ? 401 : 500;
+            res.status(status).json({ ok: false, error: status === 401 ? "unauthenticated" : "ensureProfile_failed", message: `Auth lookup failed: ${message}`, requestId });
+            return;
+        }
+    }
+
+    try {
+        let created = false;
+        let repaired = false;
+        let creditsTotal = 0;
+
+        const finalEmail = authUser?.email || fallbackEmail;
+        const finalName = authUser?.displayName || fallbackName;
+        const finalVerified = authUser?.emailVerified || fallbackVerified;
+        const defaults = buildDefaultProfile(decoded.uid, finalEmail, finalName, finalVerified);
+
+        await db.runTransaction(async tx => {
+            const txSnap = await tx.get(userRef);
+            const data = txSnap.data() || {};
+
+            if (!txSnap.exists) {
+                tx.set(userRef, defaults);
+                created = true;
+                creditsTotal = defaults.credits;
+                return;
+            }
+
+            const update: Record<string, any> = {};
+            const creditState = normalizeCreditState(data);
+            creditsTotal = typeof data.credits === "number" ? Math.max(0, data.credits) : creditState.totalCredits;
+
+            if (typeof data.bonusCredits !== "number") {
+                update.bonusCredits = creditState.bonusCredits;
+                repaired = true;
+            }
+            if (typeof data.monthlyCreditsRemaining !== "number") {
+                update.monthlyCreditsRemaining = creditState.monthlyCreditsRemaining;
+                repaired = true;
+            }
+            if (typeof data.credits !== "number") {
+                update.credits = creditState.totalCredits;
+                repaired = true;
+                creditsTotal = creditState.totalCredits;
+            }
+            if (data.plan === undefined) {
+                update.plan = "free";
+                repaired = true;
+            }
+            if (data.subscriptionStatus === undefined) {
+                update.subscriptionStatus = null;
+                repaired = true;
+            }
+            if (data.creditsResetAt === undefined) {
+                update.creditsResetAt = null;
+                repaired = true;
+            }
+            if (!data.email && defaults.email) {
+                update.email = defaults.email;
+            }
+            if (!data.displayName && defaults.displayName) {
+                update.displayName = defaults.displayName;
+            }
+            if (data.emailVerified === undefined) {
+                update.emailVerified = defaults.emailVerified;
+            }
+            if (data.isAdmin === undefined) {
+                update.isAdmin = false;
+            }
+            if (!data.createdAt) {
+                update.createdAt = defaults.createdAt;
+            }
+
+            if (Object.keys(update).length > 0) {
+                update.updatedAt = FieldValue.serverTimestamp();
+                tx.set(userRef, update, { merge: true });
+            }
+        });
+
+        safeLog("info", "[ensureProfile] success", { requestId, uid: decoded.uid, created, repaired, credits: creditsTotal });
+        res.json({ ok: true, created, repaired, credits: creditsTotal, requestId, projectId: resolveProjectId() });
+    } catch (err: any) {
+        safeLog("error", "[ensureProfile] error", { requestId, uid: authUser?.uid, error: err instanceof Error ? { message: err.message, stack: err.stack } : err });
+        res.status(500).json({
+            ok: false,
+            error: "ensureProfile_failed",
+            message: err?.message,
+            requestId,
+            projectId: resolveProjectId()
+        });
+    }
+});
+
+// Debug endpoint: whoami + token metadata
+app.get("/debug/whoami", async (req, res) => {
+    const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+    const authHeader = req.headers.authorization;
+    const idToken = authHeader?.startsWith("Bearer ") ? authHeader.split("Bearer ")[1]?.trim() : null;
+    const tokenMeta = idToken ? decodeTokenMetadata(idToken) : null;
+    safeLog("info", "[whoami] start", { requestId, hasAuth: !!authHeader, tokenMeta });
+
+    if (!idToken) {
+        res.status(401).json({ ok: false, error: "unauthenticated", requestId });
+        return;
+    }
+
+    try {
+        const decoded = await auth.verifyIdToken(idToken);
+        const profileSnap = await db.collection("users").doc(decoded.uid).get().catch(() => null);
+        const projectId = process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || null;
+        res.json({
+            ok: true,
+            requestId,
+            uid: decoded.uid,
+            email: decoded.email || null,
+            tokenMeta,
+            projectId,
+            profileExists: !!profileSnap?.exists,
+        });
+    } catch (err: any) {
+        safeLog("warn", "[whoami] token verification failed", { requestId, tokenMeta, error: err?.message, code: err?.code });
+        res.status(401).json({ ok: false, error: "unauthenticated", requestId, tokenMeta, projectId: resolveProjectId() });
+    }
+});
+
+// GLOBAL ERROR HANDLER
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const requestId = (req.headers["x-request-id"] as string) || "unknown";
+    safeLog("error", "[Express] Unhandled error", {
+        requestId,
+        message: err.message,
+        stack: err.stack,
+        url: req.url,
+        method: req.method,
+        projectId: resolveProjectId()
+    });
+    res.status(500).json({
+        ok: false,
+        error: "internal_server_error",
+        message: err.message,
+        requestId,
+        projectId: resolveProjectId()
+    });
 });
 
 function getClientIp(req: express.Request): string {
@@ -87,17 +393,24 @@ function isAllowedImageUrl(url: string): boolean {
         if (parsed.protocol !== "https:") return false;
 
         const host = parsed.hostname.toLowerCase();
-        if (!ALLOWED_IMAGE_HOSTS.has(host)) return false;
+        if (!isImageHostAllowed(host)) return false;
+
+        const bucketName = getStorageBucketName();
+        const pid = bucketName.split(".")[0]; // Get project ID part
 
         // If using shared hosts, ensure the path references our bucket
         if (host === "firebasestorage.googleapis.com") {
-            return parsed.pathname.includes(`/v0/b/${STORAGE_BUCKET_NAME}/`);
+            return parsed.pathname.includes(`/v0/b/${bucketName}/`) ||
+                parsed.pathname.includes(`/v0/b/${pid}.appspot.com/`) ||
+                parsed.pathname.includes(`/v0/b/${pid}.firebasestorage.app/`);
         }
-        if (host === "storage.googleapis.com") {
-            return parsed.pathname.startsWith(`/${STORAGE_BUCKET_NAME}/`);
+        if (host === "storage.googleapis.com" ||
+            host === `${pid}.appspot.com` ||
+            host === `${pid}.firebasestorage.app`) {
+            return parsed.pathname.startsWith(`/${bucketName}/`) ||
+                parsed.pathname.startsWith(`/${pid}/`);
         }
 
-        // Direct bucket domain (e.g., <bucket>.firebasestorage.app)
         return true;
     } catch {
         return false;
@@ -265,12 +578,8 @@ app.post("/editMockup", async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
-app.get("/health", (req, res) => {
-    res.json({ ok: true, service: "situ-api", timestamp: new Date().toISOString() });
-});
 
 async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
-    const bucket = admin.storage().bucket();
     const matches = dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
 
     if (!matches || matches.length !== 3) {
@@ -279,7 +588,7 @@ async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
 
     const mimeType = matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
-    const file = bucket.file(path);
+    const file = admin.storage().bucket().file(path);
 
     await file.save(buffer, {
         metadata: { contentType: mimeType }
@@ -296,7 +605,8 @@ async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
     // Construct the public URL manually
     // Format: https://firebasestorage.googleapis.com/v0/b/[bucket]/o/[path]?alt=media&token=[token]
     const encodedPath = encodeURIComponent(path).replace(/\//g, "%2F");
-    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media&token=${token}`;
+    const bucketName = getStorageBucketName();
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media&token=${token}`;
 
     return url;
 }
@@ -459,9 +769,10 @@ app.post("/generateGuestMockups", async (req, res) => {
                 artworkUrl // Now this is a short https:// URL
             });
         } else {
+            const lastError = errors.length > 0 ? errors[0].message : "Unknown error";
             res.status(500).json({
                 ok: false,
-                error: "All generations failed.",
+                error: `All generations failed: ${lastError}`,
                 errors
             });
             return;
@@ -665,6 +976,7 @@ app.post("/createCheckoutSession", async (req, res) => {
 // Cancel subscription endpoint
 app.post("/cancelSubscription", async (req, res) => {
     try {
+        const requestId = crypto.randomUUID();
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             res.status(401).json({ ok: false, error: "Unauthorized" });
@@ -687,17 +999,33 @@ app.post("/cancelSubscription", async (req, res) => {
             cancel_at_period_end: true
         });
 
+        safeLog("info", "[Stripe] Subscription cancellation scheduled", {
+            requestId,
+            uid,
+            subscriptionId: (subscription as any).id,
+            cancelAtPeriodEnd: (subscription as any).cancel_at_period_end,
+            currentPeriodEnd: new Date((subscription as any).current_period_end * 1000).toISOString()
+        });
+
         await db.collection("users").doc(uid).update({
             subscriptionStatus: "canceling", // Will become "canceled" when webhook fires
             cancelAtPeriodEnd: true
         });
 
-        logger.info(`[cancelSubscription] User ${uid} scheduled subscription cancellation`);
+        const cancelAtPeriodEnd = (subscription as any).cancel_at_period_end ?? false;
+        const cancelAt = (subscription as any).cancel_at ? new Date((subscription as any).cancel_at * 1000).toISOString() : null;
+        const currentPeriodEnd = (subscription as any).current_period_end ? new Date((subscription as any).current_period_end * 1000).toISOString() : null;
+
+        logger.info(`[cancelSubscription] requestId=${requestId} uid=${uid} subId=${userData.stripeSubscriptionId} cancel_at_period_end=${cancelAtPeriodEnd} current_period_end=${currentPeriodEnd}`);
 
         res.json({
             ok: true,
             message: "Subscription will be canceled at the end of the current billing period",
-            cancelAt: subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null
+            cancelAtPeriodEnd,
+            cancelAt,
+            currentPeriodEnd,
+            requestId,
+            stripeResponse: subscription
         });
     } catch (error: any) {
         logger.error("cancelSubscription error", error);
@@ -1319,6 +1647,7 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
 // ... existing endpoints ...
 
 app.post("/generateMemberMockups", async (req, res) => {
+    const requestId = crypto.randomUUID();
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -1499,7 +1828,9 @@ app.post("/generateMemberMockups", async (req, res) => {
     } catch (error: any) {
         logger.error("generateMemberMockups error", error);
         console.error("[MEMBER] Critical error:", error);
-        res.status(500).json({ ok: false, error: error.message });
+        // Ensure we handle objects correctly in JSON response
+        const message = error instanceof Error ? error.message : JSON.stringify(error);
+        res.status(500).json({ ok: false, error: message, requestId });
     }
 });
 
@@ -1517,7 +1848,7 @@ async function verifyAdmin(req: express.Request, res: express.Response): Promise
     try {
         const idToken = authHeader.split("Bearer ")[1];
         const decodedToken = await admin.auth().verifyIdToken(idToken);
-        if (!isAdmin(decodedToken.email)) {
+        if (!hasAdminAccess(decodedToken)) {
             logger.warn(`[Admin] Non-admin access attempt by ${decodedToken.email}`);
             res.status(403).json({ ok: false, error: "Forbidden: Admin access required" });
             return null;
@@ -1660,41 +1991,67 @@ app.get("/admin/users/:uid", async (req, res) => {
 
     try {
         const { uid } = req.params;
-        const userDoc = await db.collection("users").doc(uid).get();
+        const userRef = db.collection("users").doc(uid);
+        const userDoc = await userRef.get();
+        const profileExists = userDoc.exists;
+        const userData = userDoc.data() || {};
+        const creditState = normalizeCreditState(userData);
 
-        if (!userDoc.exists) {
-            res.status(404).json({ ok: false, error: "User not found" });
+        let authUser: admin.auth.UserRecord | null = null;
+        let authError: string | null = null;
+        try {
+            authUser = await admin.auth().getUser(uid);
+        } catch (err: any) {
+            if (err.code === "auth/user-not-found") {
+                logger.debug(`[Admin] Auth user not found for ${uid}`);
+            } else {
+                logger.error(`[Admin] Auth lookup error for ${uid}`, err);
+                authError = err.message;
+            }
+        }
+
+        if (!profileExists && !authUser && !authError) {
+            res.status(404).json({ ok: false, error: "User not found in Auth or Firestore" });
             return;
         }
 
-        const userData = userDoc.data()!;
-        const creditState = normalizeCreditState(userData);
+        const artworksSnap = profileExists ? await userRef.collection("artworks").get() : { size: 0, docs: [] as any[] };
+        const mockupsSnap = profileExists
+            ? await userRef.collection("mockups")
+                .orderBy("createdAt", "desc")
+                .limit(10)
+                .get()
+            : { size: 0, docs: [] as any[] };
 
-        // Get artworks and mockups
-        const artworksSnap = await db.collection("users").doc(uid).collection("artworks").get();
-        const mockupsSnap = await db.collection("users").doc(uid).collection("mockups")
-            .orderBy("createdAt", "desc")
-            .limit(10)
-            .get();
-
-        const recentMockups = mockupsSnap.docs.map(d => ({
+        const recentMockups = mockupsSnap.docs.map((d: any) => ({
             id: d.id,
             url: d.data().url,
             category: d.data().category,
             createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null
         }));
 
+        const provider = authUser?.providerData?.[0]?.providerId || null;
+        const authCreatedAt = authUser?.metadata?.creationTime ? new Date(authUser.metadata.creationTime).toISOString() : null;
+        const lastLogin = authUser?.metadata?.lastSignInTime ? new Date(authUser.metadata.lastSignInTime).toISOString() : null;
+
         res.json({
             ok: true,
             user: {
                 uid,
-                email: userData.email || "",
-                displayName: userData.displayName || "",
+                email: userData.email || authUser?.email || "",
+                displayName: userData.displayName || authUser?.displayName || "",
+                emailVerified: authUser?.emailVerified ?? userData.emailVerified ?? false,
+                provider,
+                authCreatedAt,
+                lastLogin,
+                authUserExists: !!authUser,
+                authError,
+                profileExists,
                 plan: userData.plan || "free",
                 credits: creditState.totalCredits,
                 monthlyCreditsRemaining: creditState.monthlyCreditsRemaining,
                 bonusCredits: creditState.bonusCredits,
-                createdAt: userData.createdAt?.toDate?.()?.toISOString() || null,
+                createdAt: userData.createdAt?.toDate?.()?.toISOString() || authCreatedAt,
                 stripeCustomerId: userData.stripeCustomerId || null,
                 subscriptionStatus: userData.subscriptionStatus || null,
                 artworkCount: artworksSnap.size,
@@ -1705,6 +2062,65 @@ app.get("/admin/users/:uid", async (req, res) => {
     } catch (error: any) {
         logger.error("[Admin] User detail error", error);
         res.status(500).json({ ok: false, error: "Failed to fetch user" });
+    }
+});
+
+// POST /admin/users/:uid/rebuildProfile - recreate profile document
+app.post("/admin/users/:uid/rebuildProfile", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const { uid } = req.params;
+        let authUser: admin.auth.UserRecord;
+
+        try {
+            authUser = await admin.auth().getUser(uid);
+        } catch (err: any) {
+            res.status(404).json({ ok: false, error: "Auth user not found" });
+            return;
+        }
+
+        const userRef = db.collection("users").doc(uid);
+        const existing = await userRef.get();
+        const defaults = buildDefaultProfile(authUser.uid, authUser.email, authUser.displayName, authUser.emailVerified);
+        const data = existing.data() || {};
+
+        const rebuiltProfile = {
+            ...defaults,
+            email: authUser.email || data.email || "",
+            displayName: authUser.displayName || data.displayName || "",
+            plan: data.plan || defaults.plan,
+            bonusCredits: typeof data.bonusCredits === "number" ? data.bonusCredits : defaults.bonusCredits,
+            monthlyCreditsRemaining: typeof data.monthlyCreditsRemaining === "number" ? data.monthlyCreditsRemaining : defaults.monthlyCreditsRemaining,
+            credits: typeof data.credits === "number" ? data.credits : defaults.credits,
+            stripeCustomerId: data.stripeCustomerId || null,
+            stripeSubscriptionId: data.stripeSubscriptionId || null,
+            subscriptionStatus: data.subscriptionStatus ?? defaults.subscriptionStatus,
+            creditsResetAt: data.creditsResetAt ?? defaults.creditsResetAt,
+            createdAt: data.createdAt || defaults.createdAt,
+        };
+
+        await userRef.set(rebuiltProfile, { merge: true });
+        res.json({ ok: true, rebuilt: true });
+    } catch (error: any) {
+        logger.error("[Admin] Rebuild profile error", error);
+        res.status(500).json({ ok: false, error: "Failed to rebuild profile" });
+    }
+});
+
+// POST /admin/users/:uid/hardDelete - delete Firestore, Storage, Auth
+app.post("/admin/users/:uid/hardDelete", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    try {
+        const { uid } = req.params;
+        const summary = await purgeUserByUidOrEmail(uid, false);
+        res.json({ ok: true, summary });
+    } catch (error: any) {
+        logger.error("[Admin] Hard delete error", error);
+        res.status(500).json({ ok: false, error: "Failed to hard delete user" });
     }
 });
 
@@ -1785,6 +2201,49 @@ app.post("/admin/users/:uid/credits", async (req, res) => {
     }
 });
 
+// POST /admin/users/purge - purge by uid or email
+app.post("/admin/users/purge", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    const { uidOrEmail, dryRun = false } = req.body || {};
+    if (!uidOrEmail || typeof uidOrEmail !== "string") {
+        res.status(400).json({ ok: false, error: "uidOrEmail is required" });
+        return;
+    }
+
+    try {
+        const summary = await purgeUserByUidOrEmail(uidOrEmail, !!dryRun);
+        res.json({ ok: true, summary });
+    } catch (err: any) {
+        logger.error("[Admin] Purge error", err);
+        res.status(500).json({ ok: false, error: err.message || "Failed to purge user" });
+    }
+});
+
+// POST /admin/deleteUser - delete by email (Auth + data)
+app.post("/admin/deleteUser", async (req, res) => {
+    const adminUser = await verifyAdmin(req, res);
+    if (!adminUser) return;
+
+    const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();
+    const email = (req.body?.email || "").toString().trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+        res.status(400).json({ ok: false, error: "email_required", requestId });
+        return;
+    }
+
+    safeLog("info", "[Admin] deleteUser start", { requestId, admin: adminUser.email, email });
+    try {
+        const summary = await purgeUserByUidOrEmail(email, false);
+        safeLog("info", "[Admin] deleteUser success", { requestId, email, uid: summary.uid });
+        res.json({ ok: true, requestId, summary });
+    } catch (err: any) {
+        safeLog("error", "[Admin] deleteUser error", { requestId, email, error: err instanceof Error ? { message: err.message, stack: err.stack } : err });
+        res.status(500).json({ ok: false, error: "delete_failed", requestId });
+    }
+});
+
 // DELETE /admin/users/all - Delete all non-admin users (for testing)
 app.delete("/admin/users/all", async (req, res) => {
     const adminUser = await verifyAdmin(req, res);
@@ -1799,7 +2258,7 @@ app.delete("/admin/users/all", async (req, res) => {
             const userEmail = userData.email?.toLowerCase() || "";
 
             // Skip admin users
-            if (isAdmin(userEmail)) {
+            if (isAdminEmail(userEmail)) {
                 logger.info(`[Admin] Skipping admin user: ${userEmail}`);
                 continue;
             }
@@ -1840,6 +2299,27 @@ export const api = onRequest({ memory: "1GiB", timeoutSeconds: 300 }, app);
 
 // NOTE: nukeEverything endpoint has been removed for production safety.
 // If you need to clear dev data, use Firebase Console or a separate admin script.
+
+// Auth trigger: create user profile on signup
+export const createUserProfileOnAuth = functions.auth.user().onCreate(async (user) => {
+    try {
+        const userRef = db.collection("users").doc(user.uid);
+
+        await db.runTransaction(async (tx) => {
+            const existing = await tx.get(userRef);
+            if (existing.exists) {
+                logger.info(`[AuthTrigger] Profile already exists for ${user.uid}`);
+                return;
+            }
+
+            const profile = buildDefaultProfile(user.uid, user.email, user.displayName, user.emailVerified);
+            tx.set(userRef, profile);
+            logger.info(`[AuthTrigger] Created profile for ${user.uid} email=${user.email}`);
+        });
+    } catch (err: any) {
+        logger.error("[AuthTrigger] Failed to create profile", err);
+    }
+});
 
 // Firestore Notification Trigger for Welcome Email
 exports.onUserCreated = onDocumentCreated("users/{uid}", async (event) => {

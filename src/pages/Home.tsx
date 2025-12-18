@@ -40,7 +40,7 @@ export function Home() {
                             See your art in the world<br className="hidden md:block" /> in under a minute.
                         </h1>
                         <p className="text-base sm:text-lg md:text-xl text-white/90 mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-delay-1 drop-shadow-md font-medium px-4">
-                            Upload one artwork and get a set of clean, realistic mockups for your socials, portfolio, and shop.
+                            Upload once, get 4 mockups instantly, and email them to yourself to keep.
                         </p>
                         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2 w-full px-4">
                             <Button
@@ -64,17 +64,17 @@ export function Home() {
                         <div className="text-center space-y-4">
                             <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">1</div>
                             <h3 className="text-xl font-semibold text-brand-brown">Upload your art</h3>
-                            <p className="text-brand-brown/70">Drag and drop your high-res artwork file. We handle the rest.</p>
+                            <p className="text-brand-brown/70">Drag and drop a high-res JPG or PNG. Higher resolution looks best.</p>
                         </div>
                         <div className="text-center space-y-4">
                             <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">2</div>
-                            <h3 className="text-xl font-semibold text-brand-brown">AI Generation</h3>
-                            <p className="text-brand-brown/70">Our AI places your art on realistic products with perfect lighting and perspective.</p>
+                            <h3 className="text-xl font-semibold text-brand-brown">Create mockups</h3>
+                            <p className="text-brand-brown/70">Situ automatically places your art into believable scenes with clean lighting.</p>
                         </div>
                         <div className="text-center space-y-4">
                             <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">3</div>
                             <h3 className="text-xl font-semibold text-brand-brown">Download & Share</h3>
-                            <p className="text-brand-brown/70">Get high-quality mockups ready for your shop or social media.</p>
+                            <p className="text-brand-brown/70">Download your set or email 4 free guest mockups to yourself, ready for shop or socials.</p>
                         </div>
                     </div>
                 </div>
@@ -87,10 +87,10 @@ export function Home() {
                     <h2 className="text-3xl font-bold text-center text-brand-brown mb-16 font-serif">What Situ can do</h2>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
                         {[
-                            { title: "Wall Display", desc: "Gallery-quality frames in modern interiors.", img: "/images/feature-wall.png" },
-                            { title: "Print Collections", desc: "Art prints, postcards, and stationery sets.", img: "/images/feature-print.png" },
-                            { title: "Apparel", desc: "T-shirts, hoodies, and tote bags.", img: "/images/feature-apparel.png" },
-                            { title: "Phone Cases", desc: "Custom cases for iPhone and Android.", img: "/images/feature-phone.png" }
+                            { title: "Wall Art", desc: "Gallery-ready frames in modern interiors that feel real.", img: "/images/feature-wall.png" },
+                            { title: "Print Collections", desc: "Art prints, postcards, and stationery sets shown in clean light.", img: "/images/feature-print.png" },
+                            { title: "Apparel", desc: "T-shirts, hoodies, and totes that look wearable, not flat.", img: "/images/feature-apparel.png" },
+                            { title: "Phone Cases", desc: "Custom cases for iPhone and Android that fit naturally.", img: "/images/feature-phone.png" }
                         ].map((item, index) => (
                             <div
                                 key={item.title}
@@ -114,15 +114,55 @@ export function Home() {
                 </div>
             </section>
 
+            {/* Made for artists */}
+            <section className="py-16 bg-brand-cream border-t border-brand-brown/5">
+                <div className="container mx-auto px-4 max-w-6xl">
+                    <div className="grid md:grid-cols-2 gap-10 items-start">
+                        <div>
+                            <h2 className="text-3xl font-bold text-brand-brown mb-4 font-serif">Made for artists who want results fast</h2>
+                            <p className="text-brand-brown/70 text-base">Skip the software. Get believable mockups you can share right away.</p>
+                        </div>
+                        <div className="space-y-3 text-brand-brown">
+                            {[
+                                "Get 4 realistic mockups instantly (guests can email them to themselves)",
+                                "No Photoshop or expensive software subscriptions",
+                                "Clean lighting and perspective that looks believable",
+                                "Ready for your shop, portfolio, and socials"
+                            ].map(item => (
+                                <div key={item} className="bg-white/70 border border-brand-brown/10 rounded-xl p-4 text-base">
+                                    {item}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {/* Great for */}
+            <section className="py-16 bg-brand-sand/30">
+                <div className="container mx-auto px-4">
+                    <h2 className="text-3xl font-bold text-brand-brown mb-8 font-serif text-center">Great for</h2>
+                    <div className="grid md:grid-cols-3 gap-6">
+                        {[
+                            { title: "Portfolio", desc: "Add realistic product images so people can instantly picture your work in the real world." },
+                            { title: "Online shop listings", desc: "Add polished product images to Etsy/Shopify fast." },
+                            { title: "Social posts", desc: "Show your art in context, not just a flat file." }
+                        ].map((item) => (
+                            <div key={item.title} className="bg-white/80 border border-brand-brown/10 rounded-xl p-6">
+                                <h3 className="font-semibold text-brand-brown mb-2 font-serif">{item.title}</h3>
+                                <p className="text-brand-brown/70 text-sm">{item.desc}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </section>
+
             {/* Pricing Section */}
             <section className="py-24 bg-brand-cream border-t border-brand-brown/5">
                 <div className="container mx-auto px-4">
                     <div className="text-center max-w-2xl mx-auto mb-16">
                         <h2 className="text-3xl font-bold text-brand-brown mb-4 font-serif">Simple, transparent pricing</h2>
                         <p className="text-lg text-brand-brown/70">Choose the plan that fits your creative workflow.</p>
-                        <div className="mt-6 inline-block bg-brand-sand text-brand-brown px-4 py-2 rounded-full text-sm font-medium">
-                            Early testing: 20 images free for new members
-                        </div>
                     </div>
 
                     <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
@@ -134,6 +174,7 @@ export function Home() {
                                     <span className="text-4xl font-bold tracking-tight">$12</span>
                                     <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
+                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
                             </div>
                             <p className="text-brand-brown/70 mb-8">Perfect for occasional projects.</p>
                             <Button
@@ -157,6 +198,7 @@ export function Home() {
                                     <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
                                 <p className="text-sm text-brand-brown/60 mt-1">Billed $30 every 3 months</p>
+                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
                             </div>
                             <p className="text-brand-brown/80 mb-8">Great for active artists.</p>
                             <Button
@@ -176,6 +218,7 @@ export function Home() {
                                     <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
                                 <p className="text-sm text-brand-brown/60 mt-1">Billed $42 every 6 months</p>
+                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
                             </div>
                             <p className="text-brand-brown/70 mb-8">Best value for long-term use.</p>
                             <Button
@@ -187,6 +230,31 @@ export function Home() {
                             </Button>
                         </div>
                     </div>
+                    <p className="text-center text-sm text-brand-brown/70 mt-6">Credits reset monthly. Top up anytime.</p>
+                </div>
+            </section>
+
+            {/* FAQ */}
+            <section className="py-20 bg-white border-t border-brand-brown/5">
+                <div className="container mx-auto px-4 max-w-5xl">
+                    <h2 className="text-3xl font-bold text-brand-brown mb-10 font-serif text-center">FAQ</h2>
+                    <div className="grid md:grid-cols-2 gap-8">
+                        {[
+                            { q: "How do credits work?", a: "Each plan includes 50 mockups per month. Creating a mockup uses 1 credit." },
+                            { q: "Can I try it before subscribing?", a: "Yes. Guests can generate 4 mockups and email them to themselves for free." },
+                            { q: "Do unused credits roll over?", a: "No. Credits reset each month so you start fresh with 50." },
+                            { q: "Can I buy extra credits?", a: "Yes. You can top up with an extra pack of credits anytime." },
+                            { q: "Does Situ change my artwork?", a: "No. Situ keeps your art as-is and places it into realistic scenes." },
+                            { q: "What files work best?", a: "High-resolution PNG or JPG files work best. The higher the quality, the better the mockups look." },
+                            { q: "Can I cancel anytime?", a: "Yes. You can cancel anytime from your account settings and keep access until the end of your billing period." },
+                            { q: "Can I use the mockups commercially?", a: "Yes. Use your generated mockups on your store, portfolio, social posts, and ads." }
+                        ].map(item => (
+                            <div key={item.q} className="bg-brand-sand/20 border border-brand-brown/10 rounded-2xl p-6">
+                                <h3 className="font-semibold text-brand-brown mb-2">{item.q}</h3>
+                                <p className="text-brand-brown/70 text-sm">{item.a}</p>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             </section>
 
@@ -194,11 +262,18 @@ export function Home() {
             <section className="py-24 bg-brand-brown text-brand-cream">
                 <div className="container mx-auto px-4 text-center">
                     <h2 className="text-3xl md:text-5xl font-bold mb-8 font-serif">Ready to see your art in the world?</h2>
-                    <Link to="/guest">
-                        <Button size="lg" className="bg-brand-cream text-brand-brown hover:bg-brand-cream/90 px-10 text-lg">
-                            Start with your artwork
-                        </Button>
-                    </Link>
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+                        <Link to="/guest">
+                            <Button size="lg" className="bg-brand-cream text-brand-brown hover:bg-brand-cream/90 px-10 text-lg">
+                                Start with your artwork
+                            </Button>
+                        </Link>
+                        <a href="mailto:hello@floobcreative.com">
+                            <Button size="lg" variant="outline" className="text-brand-cream border-brand-cream/60 hover:bg-brand-cream/10 px-8 text-lg">
+                                Contact us
+                            </Button>
+                        </a>
+                    </div>
                 </div>
             </section>
         </div>

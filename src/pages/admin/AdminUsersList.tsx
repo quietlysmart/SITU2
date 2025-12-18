@@ -24,6 +24,12 @@ export function AdminUsersList() {
     const [filter, setFilter] = useState("");
     const [total, setTotal] = useState(0);
     const [offset, setOffset] = useState(0);
+    const [purgeInput, setPurgeInput] = useState("");
+    const [purgeResult, setPurgeResult] = useState<string | null>(null);
+    const [purgeLoading, setPurgeLoading] = useState(false);
+    const [rebuildLoading, setRebuildLoading] = useState(false);
+    const [deleteEmail, setDeleteEmail] = useState("");
+    const [deleteLoading, setDeleteLoading] = useState(false);
     const limit = 20;
 
     useEffect(() => {
@@ -69,6 +75,90 @@ export function AdminUsersList() {
         fetchUsers();
     };
 
+    const handlePurge = async () => {
+        if (!user || !purgeInput) return;
+        setPurgeLoading(true);
+        setPurgeResult(null);
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/admin/users/purge`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ uidOrEmail: purgeInput, dryRun: false })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to purge user");
+            }
+            setPurgeResult(JSON.stringify(data.summary, null, 2));
+            fetchUsers();
+        } catch (err: any) {
+            setPurgeResult(`Error: ${err.message}`);
+        } finally {
+            setPurgeLoading(false);
+        }
+    };
+
+    const handleRebuildProfile = async () => {
+        if (!user || !purgeInput) return;
+        if (purgeInput.includes("@")) {
+            setPurgeResult("Rebuild requires a UID (not email).");
+            return;
+        }
+        setRebuildLoading(true);
+        setPurgeResult(null);
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/admin/users/${purgeInput}/rebuildProfile`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                }
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to rebuild profile");
+            }
+            setPurgeResult("Profile rebuilt successfully.");
+            fetchUsers();
+        } catch (err: any) {
+            setPurgeResult(`Error: ${err.message}`);
+        } finally {
+            setRebuildLoading(false);
+        }
+    };
+
+    const handleDeleteByEmail = async () => {
+        if (!user || !deleteEmail) return;
+        setDeleteLoading(true);
+        setPurgeResult(null);
+        try {
+            const token = await user.getIdToken();
+            const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/admin/deleteUser`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ email: deleteEmail })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "Failed to delete user");
+            }
+            setPurgeResult(JSON.stringify(data.summary, null, 2));
+            fetchUsers();
+        } catch (err: any) {
+            setPurgeResult(`Error: ${err.message}`);
+        } finally {
+            setDeleteLoading(false);
+        }
+    };
+
     if (error) {
         return (
             <div className="bg-red-50 text-red-600 p-4 rounded-lg">
@@ -81,31 +171,82 @@ export function AdminUsersList() {
         <div>
             <h1 className="text-2xl font-bold text-slate-900 mb-6">Users</h1>
 
+            <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-3 mb-4 text-sm">
+                Profiles only appear once created. If Auth users are missing, rebuild their profile or purge by UID/email.
+            </div>
+
             {/* Search and Filters */}
             <div className="bg-white rounded-xl p-4 shadow-sm border border-slate-200 mb-6">
-                <form onSubmit={handleSearch} className="flex gap-4">
-                    <input
-                        type="text"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search by email or name..."
-                        className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-                    />
-                    <select
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        className="px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-                    >
-                        <option value="">All Users</option>
-                        <option value="zero_credits">Zero Credits</option>
-                        <option value="subscribed">Subscribed</option>
-                    </select>
-                    <button
-                        type="submit"
-                        className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800"
-                    >
-                        Search
-                    </button>
+                <form onSubmit={handleSearch} className="flex flex-col gap-4">
+                    <div className="flex gap-4">
+                        <input
+                            type="text"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="Search by email or name..."
+                            className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        />
+                        <select
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        >
+                            <option value="">All Users</option>
+                            <option value="zero_credits">Zero Credits</option>
+                            <option value="subscribed">Subscribed</option>
+                        </select>
+                        <button
+                            type="submit"
+                            className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800"
+                        >
+                            Search
+                        </button>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+                        <input
+                            type="text"
+                            value={purgeInput}
+                            onChange={(e) => setPurgeInput(e.target.value)}
+                            placeholder="Purge by UID or email"
+                            className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        />
+                        <button
+                            type="button"
+                            onClick={handlePurge}
+                            disabled={purgeLoading || !purgeInput}
+                            className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-500 disabled:opacity-50"
+                        >
+                            {purgeLoading ? "Purging..." : "Purge"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleRebuildProfile}
+                            disabled={rebuildLoading || !purgeInput}
+                            className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+                        >
+                            {rebuildLoading ? "Rebuilding..." : "Rebuild Profile"}
+                        </button>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+                        <input
+                            type="email"
+                            value={deleteEmail}
+                            onChange={(e) => setDeleteEmail(e.target.value)}
+                            placeholder="Hard delete by email (Auth + data)"
+                            className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        />
+                        <button
+                            type="button"
+                            onClick={handleDeleteByEmail}
+                            disabled={deleteLoading || !deleteEmail}
+                            className="px-4 py-2 bg-red-700 text-white rounded-lg text-sm font-medium hover:bg-red-600 disabled:opacity-50"
+                        >
+                            {deleteLoading ? "Deleting..." : "Hard Delete by Email"}
+                        </button>
+                    </div>
+                    {purgeResult && (
+                        <pre className="bg-slate-900 text-slate-100 text-xs p-3 rounded-lg overflow-x-auto">{purgeResult}</pre>
+                    )}
                 </form>
             </div>
 

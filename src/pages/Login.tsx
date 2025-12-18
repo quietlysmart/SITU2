@@ -36,6 +36,8 @@ export function Login() {
 
         try {
             await signInWithEmailAndPassword(auth, email, password);
+            const storageKeys = Object.keys(window.localStorage || {}).filter(k => k.toLowerCase().includes("firebase"));
+            console.log("[Login] signed in", { uid: auth.currentUser?.uid || null, storageKeys });
             navigate("/member/studio");
         } catch (err: any) {
             console.error("Login error:", err);

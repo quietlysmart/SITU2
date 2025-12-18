@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
 import { db, storage } from "../lib/firebase";
 import { startTopUpCheckout } from "../lib/billing";
-import { collection, addDoc, query, onSnapshot, doc, serverTimestamp, orderBy, setDoc } from "firebase/firestore";
+import { collection, addDoc, query, onSnapshot, doc, orderBy, serverTimestamp } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router-dom";
@@ -21,6 +21,7 @@ export function MemberStudio() {
     const [mockups, setMockups] = useState<any[]>([]);
     const [credits, setCredits] = useState(0);
     const [loading, setLoading] = useState(true);
+    const [profileError, setProfileError] = useState<string | null>(null);
 
     // Generation Options
     const [selectedProduct, setSelectedProduct] = useState<string>("wall");
@@ -32,17 +33,86 @@ export function MemberStudio() {
     const [selectedMockupForView, setSelectedMockupForView] = useState<any | null>(null);
     const [showLowCreditsPopup, setShowLowCreditsPopup] = useState(false);
     const [userPlan, setUserPlan] = useState<string>("free");
+    const [ensureLoading, setEnsureLoading] = useState(false);
+    const [profileStatus, setProfileStatus] = useState<"idle" | "ensuring" | "ready" | "error">("idle");
+    const ensureAttemptedRef = useRef(false);
     const computeCredits = (data: any) => {
         const monthly = typeof data?.monthlyCreditsRemaining === "number" ? data.monthlyCreditsRemaining : 0;
         const bonus = typeof data?.bonusCredits === "number" ? data.bonusCredits : 0;
-        const legacy = typeof data?.credits === "number" ? data.credits : 0;
-        const total = monthly + bonus;
+        const creditsField = data?.credits;
+        const total = (creditsField ?? (monthly + bonus)) || 0;
         return {
-            total: total || legacy,
+            total,
             monthly,
             bonus,
         };
     };
+
+    const ensureProfile = useCallback(async (force = false) => {
+        if (!user || (ensureAttemptedRef.current && !force)) return;
+        ensureAttemptedRef.current = true;
+        setEnsureLoading(true);
+        setProfileStatus("ensuring");
+        try {
+            // Force refresh token if retrying
+            const token = await user.getIdToken(force);
+            const apiUrl = import.meta.env.PROD ? "/api/user/ensureProfile" : `${import.meta.env.VITE_API_BASE_URL}/user/ensureProfile`;
+            const clientRequestId = crypto.randomUUID();
+            const resp = await fetch(apiUrl, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                    "X-Request-Id": clientRequestId,
+                }
+            });
+            const text = await resp.text();
+            let data: any = {};
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                console.error("[MemberStudio] ensureProfile: Response was not JSON", text.slice(0, 500));
+            }
+
+            if (!resp.ok) {
+                if (resp.status === 401 || resp.status === 403) {
+                    setProfileError("Please log in again to set up your profile.");
+                    setProfileStatus("error");
+                } else if (resp.status === 404) {
+                    setProfileError("Account found but not fully activated. Please contact support.");
+                    setProfileStatus("error");
+                } else {
+                    const reqId = data.requestId || resp.headers.get("x-request-id");
+                    const errMsg = data.message || data.error || "Setup failed";
+                    setProfileError(`${errMsg}${reqId ? ` (Backend ID: ${reqId})` : ` (Client ID: ${clientRequestId})`}. Please refresh or contact support.`);
+                    setProfileStatus("error");
+                }
+                return;
+            }
+            setProfileStatus("ready");
+            setProfileError(null);
+            console.log("[MemberStudio] Profile synced", { projectId: data.projectId, uid: user.uid });
+        } catch (err) {
+            console.error("[MemberStudio] ensureProfile error", err);
+            setProfileError("Connection error while setting up your profile. Please try again.");
+            setProfileStatus("error");
+        } finally {
+            setEnsureLoading(false);
+        }
+    }, [user]);
+
+    const retryEnsureProfile = async () => {
+        ensureAttemptedRef.current = false;
+        setProfileError(null);
+        setProfileStatus("ensuring");
+        await ensureProfile(true);
+    };
+
+    useEffect(() => {
+        ensureAttemptedRef.current = false;
+        setProfileStatus("idle");
+        setProfileError(null);
+    }, [user?.uid]);
 
     // Auth & Data Subscription
     useEffect(() => {
@@ -52,8 +122,12 @@ export function MemberStudio() {
             return;
         }
 
-        // Subscribe to user profile for credits
-        const unsubUser = onSnapshot(doc(db, "users", user.uid), async (docSnap) => {
+        const userRef = doc(db, "users", user.uid);
+        let missingLogged = false;
+        let profileTimeout: ReturnType<typeof setTimeout> | null = null;
+
+        const unsubUser = onSnapshot(userRef, async (docSnap) => {
+            setLoading(false);
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 const creditInfo = computeCredits(data);
@@ -62,28 +136,43 @@ export function MemberStudio() {
 
                 setCredits(currentCredits);
                 setUserPlan(plan);
+                setProfileError(null);
+                setProfileStatus("ready");
+                if (profileTimeout) {
+                    clearTimeout(profileTimeout);
+                    profileTimeout = null;
+                }
 
                 // Show low credits popup for free users when credits <= 4
                 if (plan === "free" && currentCredits <= 4 && currentCredits > 0) {
                     setShowLowCreditsPopup(true);
                 }
             } else {
-                // Profile missing (e.g. signup timeout). Create it now.
-                console.log("User profile missing, creating default...");
-                try {
-                    await setDoc(doc(db, "users", user.uid), {
-                        email: user.email,
-                        displayName: user.displayName,
-                        createdAt: serverTimestamp(),
-                        plan: "free",
-                        bonusCredits: 12,
-                        monthlyCreditsRemaining: 0,
-                        credits: 12
-                    });
-                } catch (err) {
-                    console.error("Failed to create missing profile", err);
+                if (!missingLogged) {
+                    console.warn("User profile missing, waiting for server-side creation...");
+                    missingLogged = true;
+                }
+                setProfileStatus("ensuring");
+                ensureProfile();
+                if (!profileTimeout) {
+                    profileTimeout = setTimeout(() => {
+                        // Use functional update to check if we already have a specific error
+                        setProfileError((currentErr: string | null) => {
+                            if (currentErr && currentErr.includes("ID:")) return currentErr; // Keep specific error
+                            return "Account setup is taking longer than expected. Please refresh or check connection.";
+                        });
+                        setProfileStatus((currentStatus: string) => {
+                            if (currentStatus === "ready") return "ready";
+                            return "error";
+                        });
+                    }, 15000);
                 }
             }
+        }, (error) => {
+            setLoading(false);
+            setProfileError("Unable to load your profile right now. Please try again.");
+            setProfileStatus("error");
+            console.error("[MemberStudio] Profile listener error", error);
         });
 
         // Subscribe to artworks
@@ -102,15 +191,16 @@ export function MemberStudio() {
                 }
                 return prev;
             });
+        }, (error) => {
+            console.error("[MemberStudio] Artworks listener error", error);
         });
-
-        setLoading(false);
 
         return () => {
             unsubUser();
             unsubArtworks();
+            if (profileTimeout) clearTimeout(profileTimeout);
         };
-    }, [user, authLoading, navigate]); // Removed selectedArtwork from dependencies
+    }, [user, authLoading, navigate, ensureProfile]); // Removed selectedArtwork from dependencies
 
     // Separate effect for mockups - always subscribe when we have a user
     useEffect(() => {
@@ -226,8 +316,22 @@ export function MemberStudio() {
 
             console.log("[MemberStudio] Response status:", response.status);
 
+            if (response.status === 502 || response.status === 504) {
+                // These are usually Hosting timeouts even if the job succeeded in the background.
+                console.warn("[MemberStudio] Gateway timeout (502/504). Checking if mockups were generated anyway...");
+                // Note: onSnapshot will catch the results if they appear. 
+                // We'll give it a moment then stop the spinner.
+                setTimeout(() => setGenerating(false), 2000);
+                return;
+            }
+
             if (!response.ok) {
-                const errorData = await response.json();
+                let errorData: any = {};
+                try {
+                    errorData = await response.json();
+                } catch (e) {
+                    throw new Error(`Server returned error ${response.status}`);
+                }
                 throw new Error(errorData.error || "Generation failed");
             }
 
@@ -236,17 +340,11 @@ export function MemberStudio() {
 
             if (data.ok) {
                 console.log("[MemberStudio] Generation successful, results:", data.results?.length || 0);
-                // We rely on the Firestore listeners (onSnapshot) to update credits and mockups automatically.
-                // This prevents duplicate keys and "disappearing" items caused by race conditions between
-                // manual state updates and real-time listeners.
-
                 if (data.errors && data.errors.length > 0) {
-                    console.warn("Some variations failed:", data.errors);
                     const errorMessages = data.errors.map((e: any) => `${e.category}: ${e.message}`).join("\n");
                     alert(`Generated ${data.results.length} images, but some failed:\n${errorMessages}`);
                 }
             } else {
-                console.error("Generation failed:", data.error);
                 alert(`Generation failed: ${data.error}`);
             }
         } catch (error: any) {
@@ -558,6 +656,19 @@ export function MemberStudio() {
                         <span className="text-sm font-medium text-brand-brown/70">Available Credits</span>
                         <span className="text-lg font-bold text-brand-brown">{credits}</span>
                     </div>
+                    {profileStatus === "ensuring" && !profileError && (
+                        <div className="text-sm text-brand-brown/70 mb-3">
+                            Setting up your account…{ensureLoading ? " (refreshing token)" : ""}
+                        </div>
+                    )}
+                    {profileError && (
+                        <div className="text-sm text-red-600 mb-3 space-y-2">
+                            <p>{profileError}</p>
+                            <Button variant="outline" size="sm" onClick={retryEnsureProfile} disabled={ensureLoading}>
+                                {ensureLoading ? "Retrying..." : "Retry"}
+                            </Button>
+                        </div>
+                    )}
 
                     <Button
                         onClick={handleGenerate}
