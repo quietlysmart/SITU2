@@ -1,4 +1,7 @@
 {
+    "predeploy": [
+        "npm run build"
+    ],
     "hosting": {
         "public": "dist",
         "ignore": [

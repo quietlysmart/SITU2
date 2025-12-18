@@ -225,44 +225,55 @@ export async function purgeUserByUidOrEmail(uidOrEmail: string, dryRun = false) 
         }
 
         if (!dryRun && process.env.PURGE_DIAGNOSE !== "1") {
-            summary.firestoreDetails.subcollections = await deleteAllSubcollections(db.collection("users").doc(finalUid));
-            const deletedUserDoc = footprint.userDocExists ? 1 : 0;
-            await db.collection("users").doc(finalUid).delete();
-            firestoreDeletedCount += deletedUserDoc;
-            const topLevel = await deleteTopLevelDocs(finalUid);
-            summary.firestoreDetails.topLevel = topLevel;
-            firestoreDeletedCount += Object.values(topLevel).filter(Boolean).length;
+            // PARALLELIZE: Run Storage and Firestore deletions concurrently
+            const tasks = [
+                // 1. Storage
+                (async () => {
+                    const deletedCount = await deleteUserStorage(finalUid);
+                    summary.deleted.storage = deletedCount > 0;
+                    summary.storageDeletedCount = deletedCount;
+                })(),
+                // 2. Subcollections
+                (async () => {
+                    summary.firestoreDetails.subcollections = await deleteAllSubcollections(db.collection("users").doc(finalUid));
+                })(),
+                // 3. Top Level Docs & References
+                (async () => {
+                    const deletedUserDoc = footprint.userDocExists ? 1 : 0;
+                    await db.collection("users").doc(finalUid).delete();
+                    firestoreDeletedCount += deletedUserDoc;
 
-            const perCollection: Record<string, number> = {};
-            for (const coll of REFERENCE_COLLECTIONS) {
-                const count = await deleteDocsByFields(coll, finalUid, [...REFERENCE_FIELDS]);
-                perCollection[coll] = count;
-                firestoreDeletedCount += count;
-            }
-            summary.firestoreDetails.collectionDeletes = perCollection;
+                    const topLevel = await deleteTopLevelDocs(finalUid);
+                    summary.firestoreDetails.topLevel = topLevel;
+                    firestoreDeletedCount += Object.values(topLevel).filter(Boolean).length;
+
+                    const perCollection: Record<string, number> = {};
+                    // We can also parallelize per-collection deletes
+                    const collTasks = REFERENCE_COLLECTIONS.map(async coll => {
+                        const count = await deleteDocsByFields(coll, finalUid, [...REFERENCE_FIELDS]);
+                        return { coll, count };
+                    });
+                    const collResults = await Promise.all(collTasks);
+                    collResults.forEach(r => {
+                        perCollection[r.coll] = r.count;
+                        firestoreDeletedCount += r.count;
+                    });
+                    summary.firestoreDetails.collectionDeletes = perCollection;
+                })()
+            ];
+
+            await Promise.all(tasks);
         } else {
             // Dry run or Diagnose mode
             summary.firestoreDetails.subcollections = footprint.subcollections;
             summary.firestoreDetails.userDocExists = footprint.userDocExists;
             summary.firestoreDetails.topLevel = footprint.topLevel;
             summary.firestoreDetails.collectionCounts = footprint.references;
+            summary.storageDeletedCount = dryRun ? "would delete" : 0;
         }
     } catch (err: any) {
-        logger.error("[Purge] Firestore deletion error", err);
-        summary.errors.push(`firestore: ${err.message}`);
-    }
-
-    try {
-        if (!dryRun) {
-            const deletedCount = await deleteUserStorage(finalUid);
-            summary.deleted.storage = deletedCount > 0;
-            summary.storageDeletedCount = deletedCount;
-        } else {
-            summary.storageDeletedCount = "would delete";
-        }
-    } catch (err: any) {
-        logger.error("[Purge] Storage deletion error", err);
-        summary.errors.push(`storage: ${err.message}`);
+        logger.error("[Purge] Deletion error", err);
+        summary.errors.push(`purge: ${err.message}`);
     }
 
     summary.deleted.firestore = firestoreDeletedCount > 0;

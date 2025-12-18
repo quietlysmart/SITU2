@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { Button } from "../../components/ui/button";
 
 interface UserDetail {
     uid: string;
@@ -33,8 +34,10 @@ interface UserDetail {
 export function AdminUserDetail() {
     const { user } = useAuth();
     const { uid } = useParams<{ uid: string }>();
+    const navigate = useNavigate();
     const [userData, setUserData] = useState<UserDetail | null>(null);
     const [loading, setLoading] = useState(true);
+    const [deleted, setDeleted] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     // Credit adjustment form
@@ -46,11 +49,11 @@ export function AdminUserDetail() {
     const [actionLoading, setActionLoading] = useState<"" | "rebuild" | "delete">("");
 
     useEffect(() => {
-        if (uid) fetchUserDetail();
-    }, [user, uid]);
+        if (uid && !deleted) fetchUserDetail();
+    }, [user, uid, deleted]);
 
     const fetchUserDetail = async () => {
-        if (!user || !uid) return;
+        if (!user || !uid || deleted) return;
         setLoading(true);
         setError(null);
         setAdminActionMessage(null);
@@ -156,6 +159,15 @@ export function AdminUserDetail() {
                     "Content-Type": "application/json"
                 }
             });
+
+            if (response.status === 502 || response.status === 504) {
+                console.warn("Gateway timeout (502/504) during deletion. Proceeding assuming success...");
+                alert("Deletion is being processed in the background. Returning to users list.");
+                setDeleted(true);
+                setTimeout(() => navigate("/admin/users"), 1000);
+                return;
+            }
+
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.error || "Failed to hard delete user");
@@ -167,14 +179,34 @@ export function AdminUserDetail() {
                 }
             }
             alert("User successfully deleted. All data and Auth records removed if present.");
-            fetchUserDetail();
-            navigate("/admin/users");
+            setDeleted(true);
+            setTimeout(() => {
+                navigate("/admin/users");
+            }, 1000);
         } catch (err: any) {
+            console.error("Hard delete error:", err);
             setAdminActionMessage({ type: "error", text: err.message });
         } finally {
             setActionLoading("");
         }
     };
+
+    if (deleted) {
+        return (
+            <div className="container mx-auto px-4 py-12 text-center">
+                <div className="max-w-md mx-auto p-8 bg-green-50 border border-green-100 rounded-3xl">
+                    <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                    </div>
+                    <h2 className="text-2xl font-bold text-green-800 mb-2">User Deleted</h2>
+                    <p className="text-green-700 mb-6">The user has been successfully removed. Redirecting you to the list...</p>
+                    <Button onClick={() => navigate("/admin/users")}>Go Now</Button>
+                </div>
+            </div>
+        );
+    }
 
     if (loading) {
         return (
@@ -184,7 +216,7 @@ export function AdminUserDetail() {
         );
     }
 
-    if (error) {
+    if (error && !deleted) {
         return (
             <div className="bg-red-50 text-red-600 p-4 rounded-lg">
                 Error: {error}
@@ -192,9 +224,11 @@ export function AdminUserDetail() {
         );
     }
 
-    if (!userData) {
+    if (!userData && !deleted) {
         return <div className="text-slate-500">User not found.</div>;
     }
+
+    if (!userData) return null; // Satisfy TS null check
 
     return (
         <div>

@@ -16,30 +16,46 @@ export function Signup() {
     const promo = searchParams.get("promo");
     const guestSessionId = searchParams.get("guestSession");
 
-    const waitForProfile = async (uid: string, timeoutMs = 10000) => {
+    const waitForProfile = async (uid: string, timeoutMs = 15000) => {
         const profileRef = doc(db, "users", uid);
         const start = Date.now();
+        console.log("[Signup] Waiting for profile creation...");
         while (Date.now() - start < timeoutMs) {
             const snap = await getDoc(profileRef);
-            if (snap.exists()) return true;
-            await new Promise(res => setTimeout(res, 500));
+            if (snap.exists()) {
+                console.log("[Signup] Profile ready!");
+                return true;
+            }
+            await new Promise(res => setTimeout(res, 1000));
         }
-        throw new Error("Profile not ready yet");
+        throw new Error("Profile creation taking longer than expected. We'll continue to Member Studio.");
     };
 
     const ensureProfile = async (user: any) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout for this call
+
         try {
             const token = await user.getIdToken(true);
             const apiUrl = import.meta.env.PROD ? "/api/user/ensureProfile" : `${import.meta.env.VITE_API_BASE_URL}/user/ensureProfile`;
-            await fetch(apiUrl, {
+            console.log("[Signup] Calling ensureProfile...");
+            const resp = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
                     Authorization: `Bearer ${token}`,
                     "Content-Type": "application/json"
-                }
+                },
+                signal: controller.signal
             });
-        } catch (err) {
-            console.warn("ensureProfile call failed", err);
+            clearTimeout(timeoutId);
+            console.log("[Signup] ensureProfile response:", resp.status);
+        } catch (err: any) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                console.warn("[Signup] ensureProfile timed out (expected if server is slow)");
+            } else {
+                console.warn("[Signup] ensureProfile call failed", err);
+            }
         }
     };
 
@@ -56,7 +72,7 @@ export function Signup() {
 
             // Update Auth Profile
             await updateProfile(user, { displayName: name });
-            await ensureProfile(user);
+            ensureProfile(user); // Fire-and-forget to avoid blocking the UI
 
             // Claim Guest Session if present
             if (guestSessionId) {

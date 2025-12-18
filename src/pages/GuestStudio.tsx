@@ -78,7 +78,10 @@ export function GuestStudio() {
                     categories: ["wall", "prints", "wearable", "phone"],
                 }),
             });
-            console.log("Response status:", response.status);
+            if (response.status === 502 || response.status === 504) {
+                console.warn("[GuestStudio] Gateway timeout (502/504).");
+                throw new Error("The server timed out, but your mockups may still be processing. Please wait a moment and try refreshing.");
+            }
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: "Unknown error" }));

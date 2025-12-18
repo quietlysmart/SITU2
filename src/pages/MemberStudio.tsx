@@ -33,7 +33,6 @@ export function MemberStudio() {
     const [selectedMockupForView, setSelectedMockupForView] = useState<any | null>(null);
     const [showLowCreditsPopup, setShowLowCreditsPopup] = useState(false);
     const [userPlan, setUserPlan] = useState<string>("free");
-    const [ensureLoading, setEnsureLoading] = useState(false);
     const [profileStatus, setProfileStatus] = useState<"idle" | "ensuring" | "ready" | "error">("idle");
     const ensureAttemptedRef = useRef(false);
     const computeCredits = (data: any) => {
@@ -51,8 +50,8 @@ export function MemberStudio() {
     const ensureProfile = useCallback(async (force = false) => {
         if (!user || (ensureAttemptedRef.current && !force)) return;
         ensureAttemptedRef.current = true;
-        setEnsureLoading(true);
-        setProfileStatus("ensuring");
+        if (!user || (ensureAttemptedRef.current && !force)) return;
+        ensureAttemptedRef.current = true;
         try {
             // Force refresh token if retrying
             const token = await user.getIdToken(force);
@@ -72,6 +71,13 @@ export function MemberStudio() {
                 data = JSON.parse(text);
             } catch (e) {
                 console.error("[MemberStudio] ensureProfile: Response was not JSON", text.slice(0, 500));
+            }
+
+            if (resp.status >= 500) {
+                // Gateway timeout: profile might be ready in background
+                console.warn(`[MemberStudio] ensureProfile: Server/Gateway error (${resp.status}). Profile should appear shortly.`);
+                setProfileStatus("idle"); // This allows the onSnapshot to take over
+                return;
             }
 
             if (!resp.ok) {
@@ -96,8 +102,9 @@ export function MemberStudio() {
             console.error("[MemberStudio] ensureProfile error", err);
             setProfileError("Connection error while setting up your profile. Please try again.");
             setProfileStatus("error");
+            setProfileStatus("error");
         } finally {
-            setEnsureLoading(false);
+            // No-op
         }
     }, [user]);
 
@@ -316,26 +323,37 @@ export function MemberStudio() {
 
             console.log("[MemberStudio] Response status:", response.status);
 
-            if (response.status === 502 || response.status === 504) {
-                // These are usually Hosting timeouts even if the job succeeded in the background.
-                console.warn("[MemberStudio] Gateway timeout (502/504). Checking if mockups were generated anyway...");
-                // Note: onSnapshot will catch the results if they appear. 
-                // We'll give it a moment then stop the spinner.
-                setTimeout(() => setGenerating(false), 2000);
+            // 1. Broadly handle server/hosting errors (500, 502, 504, etc.)
+            if (response.status >= 500) {
+                console.warn(`[MemberStudio] Server/Gateway error (${response.status}). Checking for background success via real-time listeners...`);
+                // Give it a moment for the background process to finish/register in Firestore
+                setTimeout(() => setGenerating(false), 3000);
                 return;
             }
 
-            if (!response.ok) {
-                let errorData: any = {};
-                try {
-                    errorData = await response.json();
-                } catch (e) {
-                    throw new Error(`Server returned error ${response.status}`);
+            // 2. Read the body as text first to avoid SyntaxError during blind .json() call
+            const responseText = await response.text();
+            let data: any = null;
+            try {
+                if (responseText) {
+                    data = JSON.parse(responseText);
                 }
-                throw new Error(errorData.error || "Generation failed");
+            } catch (e) {
+                console.warn("[MemberStudio] Failed to parse response as JSON:", responseText.slice(0, 500));
             }
 
-            const data = await response.json();
+            // 3. Handle non-200 responses that aren't 5xx (e.g., 400, 401, 403, 404)
+            if (!response.ok) {
+                const errorMsg = data?.error || data?.message || `Server returned error ${response.status}`;
+                throw new Error(errorMsg);
+            }
+
+            // 4. Handle 200 responses that might not be valid JSON (rare but possible with Hosting)
+            if (!data) {
+                console.warn("[MemberStudio] Success status but invalid/empty data. Continuing via listeners.");
+                setTimeout(() => setGenerating(false), 2000);
+                return;
+            }
             console.log("[MemberStudio] Response data:", JSON.stringify(data, null, 2));
 
             if (data.ok) {
@@ -656,17 +674,26 @@ export function MemberStudio() {
                         <span className="text-sm font-medium text-brand-brown/70">Available Credits</span>
                         <span className="text-lg font-bold text-brand-brown">{credits}</span>
                     </div>
-                    {profileStatus === "ensuring" && !profileError && (
-                        <div className="text-sm text-brand-brown/70 mb-3">
-                            Setting up your account…{ensureLoading ? " (refreshing token)" : ""}
-                        </div>
-                    )}
-                    {profileError && (
-                        <div className="text-sm text-red-600 mb-3 space-y-2">
-                            <p>{profileError}</p>
-                            <Button variant="outline" size="sm" onClick={retryEnsureProfile} disabled={ensureLoading}>
-                                {ensureLoading ? "Retrying..." : "Retry"}
-                            </Button>
+                    {profileStatus === "ensuring" && (
+                        <div className="text-center py-20 bg-white/50 rounded-3xl border border-brand-brown/10 mb-8">
+                            <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto mb-6">
+                                <svg className="animate-spin h-8 w-8" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                            </div>
+                            <h2 className="text-2xl font-bold text-brand-brown mb-2 font-serif">We're setting up your account</h2>
+                            <p className="text-brand-brown/70 max-w-sm mx-auto">
+                                This usually takes just a few seconds. If it takes longer, please try refreshing the page.
+                            </p>
+                            {profileError && (
+                                <div className="mt-6 p-4 bg-red-50 text-red-600 rounded-lg max-w-md mx-auto text-sm border border-red-100">
+                                    {profileError}
+                                    <button onClick={retryEnsureProfile} className="block w-full mt-2 font-bold underline">
+                                        Try again
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
 

@@ -187,71 +187,42 @@ app.post("/user/ensureProfile", async (req, res) => {
         return;
     }
 
-    let authUser: admin.auth.UserRecord | null = null;
-    let fallbackEmail = decoded.email || "";
-    let fallbackName = decoded.name || "";
-    let fallbackVerified = decoded.email_verified || false;
+    // Use token metadata for defaults to avoid slow auth.getUser calls
+    const finalEmail = decoded.email || "";
+    const finalName = (decoded as any).name || "";
+    const finalVerified = decoded.email_verified || false;
+    const defaults = buildDefaultProfile(decoded.uid, finalEmail, finalName, finalVerified);
 
-    // Check if doc exists FIRST to avoid unnecessary getUser call (which might fail due to 403)
     const userRef = db.collection("users").doc(decoded.uid);
-    const snap = await userRef.get();
-
-    if (snap.exists) {
-        // Just run reparative logic
-        try {
-            let repaired = false;
-            let creditsTotal = 0;
-            const data = snap.data() || {};
-            const creditState = normalizeCreditState(data);
-            creditsTotal = typeof data.credits === "number" ? Math.max(0, data.credits) : creditState.totalCredits;
-
-            const update: Record<string, any> = {};
-            if (typeof data.bonusCredits !== "number") { update.bonusCredits = creditState.bonusCredits; repaired = true; }
-            if (typeof data.monthlyCreditsRemaining !== "number") { update.monthlyCreditsRemaining = creditState.monthlyCreditsRemaining; repaired = true; }
-            if (typeof data.credits !== "number") { update.credits = creditState.totalCredits; repaired = true; creditsTotal = creditState.totalCredits; }
-            if (data.plan === undefined) { update.plan = "free"; repaired = true; }
-            if (!data.email && fallbackEmail) { update.email = fallbackEmail; repaired = true; }
-
-            if (Object.keys(update).length > 0) {
-                update.updatedAt = FieldValue.serverTimestamp();
-                await userRef.set(update, { merge: true });
-            }
-            res.json({ ok: true, created: false, repaired, credits: creditsTotal, requestId, projectId: resolveProjectId() });
-            return;
-        } catch (err: any) {
-            safeLog("error", "[ensureProfile] reparative logic failed", { requestId, uid: decoded.uid, error: err?.message });
-            // continue to full logic if simple update fails
-        }
-    }
-
-    try {
-        authUser = await auth.getUser(decoded.uid);
-    } catch (err: any) {
-        const code = err?.code || "";
-        const message = err?.message || "";
-        if (message.includes("serviceusage") || message.includes("permission") || message.includes("403")) {
-            safeLog("warn", "[ensureProfile] auth.getUser permission error. Proceeding with token fallback.", { requestId, uid: decoded.uid });
-        } else {
-            safeLog("error", "[ensureProfile] failed to load auth user", { requestId, error: message, code, uid: decoded.uid });
-            const status = code === "auth/user-not-found" ? 401 : 500;
-            res.status(status).json({ ok: false, error: status === 401 ? "unauthenticated" : "ensureProfile_failed", message: `Auth lookup failed: ${message}`, requestId });
-            return;
-        }
-    }
-
     try {
         let created = false;
         let repaired = false;
         let creditsTotal = 0;
 
-        const finalEmail = authUser?.email || fallbackEmail;
-        const finalName = authUser?.displayName || fallbackName;
-        const finalVerified = authUser?.emailVerified || fallbackVerified;
-        const defaults = buildDefaultProfile(decoded.uid, finalEmail, finalName, finalVerified);
+        // PRE-CHECK: If the document exists and looks complete, skip the transaction entirely.
+        // This avoids collisions with the Auth trigger (createUserProfileOnAuth).
+        const preSnap = await userRef.get();
+        if (preSnap.exists) {
+            const data = preSnap.data() || {};
+            // DO NOT check just existence. Check for CRITICAL fields.
+            // If any are missing, we ARE in a race condition or partial state.
+            const isComplete = typeof data.credits === "number" &&
+                data.plan !== undefined &&
+                data.isAdmin !== undefined;
+
+            if (isComplete) {
+                safeLog("info", "[ensureProfile] pre-check complete, skipping tx.", { requestId, uid: decoded.uid });
+                res.json({ ok: true, created: false, repaired: false, credits: data.credits, requestId, projectId: resolveProjectId() });
+                return;
+            } else {
+                safeLog("info", "[ensureProfile] pre-check incomplete doc found, repairing...", { requestId, uid: decoded.uid });
+            }
+        }
 
         await db.runTransaction(async tx => {
             const txSnap = await tx.get(userRef);
             const data = txSnap.data() || {};
+            // ... (rest of the transaction logic)
 
             if (!txSnap.exists) {
                 tx.set(userRef, defaults);
@@ -314,7 +285,7 @@ app.post("/user/ensureProfile", async (req, res) => {
         safeLog("info", "[ensureProfile] success", { requestId, uid: decoded.uid, created, repaired, credits: creditsTotal });
         res.json({ ok: true, created, repaired, credits: creditsTotal, requestId, projectId: resolveProjectId() });
     } catch (err: any) {
-        safeLog("error", "[ensureProfile] error", { requestId, uid: authUser?.uid, error: err instanceof Error ? { message: err.message, stack: err.stack } : err });
+        safeLog("error", "[ensureProfile] error", { requestId, uid: decoded.uid, error: err instanceof Error ? { message: err.message, stack: err.stack } : err });
         res.status(500).json({
             ok: false,
             error: "ensureProfile_failed",
@@ -1648,10 +1619,26 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
 
 app.post("/generateMemberMockups", async (req, res) => {
     const requestId = crypto.randomUUID();
-    try {
+    const startedAt = Date.now();
+    let responded = false;
+
+    const send = (status: number, body: Record<string, any>) => {
+        if (responded) return;
+        responded = true;
+        res.status(status).json({ requestId, ...body });
+    };
+
+    const timeout = setTimeout(() => {
+        if (!responded) {
+            console.warn(`[MEMBER] generateMemberMockups early ack requestId=${requestId}`);
+            send(202, { ok: true, accepted: true, message: "Processing in background" });
+        }
+    }, 45000);
+
+    const work = async () => {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
-            res.status(401).json({ ok: false, error: "Unauthorized" });
+            send(401, { ok: false, error: "Unauthorized" });
             return;
         }
         const idToken = authHeader.split("Bearer ")[1];
@@ -1661,92 +1648,84 @@ app.post("/generateMemberMockups", async (req, res) => {
         const { artworkId, artworkUrl: providedArtworkUrl, product, aspectRatio, numVariations = 1, customPrompt } = req.body;
 
         if ((!artworkId && !providedArtworkUrl) || !product) {
-            res.status(400).json({ ok: false, error: "Missing artworkId/URL or product" });
+            send(400, { ok: false, error: "Missing artworkId/URL or product" });
             return;
         }
 
-        // Check credits
         const userRef = db.collection("users").doc(uid);
         let creditState: CreditState = { monthlyCreditsRemaining: 0, bonusCredits: 0, totalCredits: 0 };
 
         try {
-            console.log(`[MEMBER] Checking credits for user ${uid}`);
+            console.log(`[MEMBER] Checking credits for user ${uid} requestId=${requestId}`);
             const userDoc = await userRef.get();
             creditState = normalizeCreditState(userDoc.data());
-            console.log(`[MEMBER] User has monthly=${creditState.monthlyCreditsRemaining} bonus=${creditState.bonusCredits} (total=${creditState.totalCredits})`);
+            console.log(`[MEMBER] User has monthly=${creditState.monthlyCreditsRemaining} bonus=${creditState.bonusCredits} (total=${creditState.totalCredits}) requestId=${requestId}`);
         } catch (err) {
-            console.error(`[MEMBER] Failed to check credits: ${err}`);
-            res.status(500).json({ ok: false, error: "Failed to check credits" });
+            console.error(`[MEMBER] Failed to check credits requestId=${requestId}`, err);
+            send(500, { ok: false, error: "Failed to check credits" });
             return;
         }
 
-        // Cost is 1 credit per variation
         const cost = numVariations;
-
         if (creditState.totalCredits < cost) {
-            console.log(`[MEMBER] Insufficient credits: ${creditState.totalCredits} < ${cost}`);
-            res.status(403).json({ ok: false, error: "Insufficient credits" });
+            console.log(`[MEMBER] Insufficient credits: ${creditState.totalCredits} < ${cost} requestId=${requestId}`);
+            send(403, { ok: false, error: "Insufficient credits" });
             return;
         }
 
-        // Get artwork URL
         let artworkUrl = providedArtworkUrl;
         if (artworkUrl && isDataUrl(artworkUrl)) {
             const storagePath = `users/${uid}/uploads/${Date.now()}_artwork.png`;
             artworkUrl = await uploadDataUrl(artworkUrl, storagePath);
         } else if (artworkUrl && !isAllowedImageUrl(artworkUrl)) {
-            res.status(400).json({ ok: false, error: "Invalid artwork URL" });
+            send(400, { ok: false, error: "Invalid artwork URL" });
             return;
         }
 
         if (!artworkUrl) {
             try {
-                console.log(`[MEMBER] Fetching artwork ${artworkId}`);
+                console.log(`[MEMBER] Fetching artwork ${artworkId} requestId=${requestId}`);
                 const artworkDoc = await db.collection("users").doc(uid).collection("artworks").doc(artworkId).get();
                 if (!artworkDoc.exists) {
-                    console.log(`[MEMBER] Artwork not found`);
-                    res.status(404).json({ ok: false, error: "Artwork not found" });
+                    console.log(`[MEMBER] Artwork not found requestId=${requestId}`);
+                    send(404, { ok: false, error: "Artwork not found" });
                     return;
                 }
                 artworkUrl = artworkDoc.data()?.url;
                 console.log(`[MEMBER] Artwork URL found: ${artworkUrl}`);
             } catch (err) {
-                console.error(`[MEMBER] Failed to fetch artwork from DB: ${err}`);
-                res.status(500).json({ ok: false, error: "Failed to fetch artwork info" });
+                console.error(`[MEMBER] Failed to fetch artwork from DB requestId=${requestId}`, err);
+                send(500, { ok: false, error: "Failed to fetch artwork info" });
                 return;
             }
         } else {
-            console.log(`[MEMBER] Using provided artwork URL`);
+            console.log(`[MEMBER] Using provided artwork URL requestId=${requestId}`);
         }
 
         if (!artworkUrl || !isAllowedImageUrl(artworkUrl)) {
-            res.status(400).json({ ok: false, error: "Artwork URL is not allowed" });
+            send(400, { ok: false, error: "Artwork URL is not allowed" });
             return;
         }
 
         const results: Array<{ id: string; url: string; category: string }> = [];
         const errors: Array<{ category: string; message: string }> = [];
 
-        // Generate variations for the selected product
         const tasks = [];
         for (let i = 0; i < numVariations; i++) {
             tasks.push((async () => {
                 try {
-                    console.log(`Generating ${product} variation ${i + 1}...`);
+                    console.log(`Generating ${product} variation ${i + 1} requestId=${requestId}`);
                     const dataUrl = await generateCategoryMockup(product, artworkUrl, customPrompt, aspectRatio);
 
                     if (dataUrl) {
                         let mockupId = `temp_${Date.now()}_${i}`;
                         try {
-                            // Upload to Storage
-                            console.log(`[MEMBER] Uploading mockup to Storage...`);
                             const storagePath = `users/${uid}/mockups/${Date.now()}_${product}_${i}.png`;
                             const storageUrl = await uploadDataUrl(dataUrl, storagePath);
 
-                            console.log(`[MEMBER] Saving mockup to Firestore...`);
                             const mockupRef = await db.collection("users").doc(uid).collection("mockups").add({
                                 category: product,
-                                url: storageUrl, // Save storage URL instead of data URL
+                                url: storageUrl,
                                 artworkId,
                                 createdAt: FieldValue.serverTimestamp(),
                                 variation: i + 1,
@@ -1754,14 +1733,9 @@ app.post("/generateMemberMockups", async (req, res) => {
                                 customPrompt: customPrompt || null
                             });
                             mockupId = mockupRef.id;
-                            console.log(`[MEMBER] Mockup saved with ID: ${mockupId}`);
-
                             results.push({ id: mockupId, url: storageUrl, category: product });
                         } catch (err) {
-                            console.error(`[MEMBER] Failed to save mockup: ${err}`);
-                            // If upload worked but firestore failed, we might still want to return success? 
-                            // Or better to fail so user knows? 
-                            // For now, if Firestore fails, we consider it a failure.
+                            console.error(`[MEMBER] Failed to save mockup requestId=${requestId}`, err);
                         }
                     } else {
                         errors.push({ category: product, message: "Generation failed" });
@@ -1775,11 +1749,10 @@ app.post("/generateMemberMockups", async (req, res) => {
 
         await Promise.all(tasks);
 
-        // Deduct credits
         let remainingCredits = creditState.totalCredits;
         if (results.length > 0) {
             try {
-                console.log(`[MEMBER] Deducting ${results.length} credits (monthly first)`);
+                console.log(`[MEMBER] Deducting ${results.length} credits (monthly first) requestId=${requestId}`);
                 const updatedState = await db.runTransaction(async tx => {
                     const doc = await tx.get(userRef);
                     const current = normalizeCreditState(doc.data());
@@ -1810,28 +1783,29 @@ app.post("/generateMemberMockups", async (req, res) => {
                 });
 
                 remainingCredits = updatedState.totalCredits;
-                console.log(`[MEMBER] Credits deducted. Remaining total: ${remainingCredits}`);
+                console.log(`[MEMBER] Credits deducted. Remaining total: ${remainingCredits} requestId=${requestId}`);
             } catch (err) {
                 if ((err as Error).message === "INSUFFICIENT_CREDITS") {
-                    console.error("[MEMBER] Credits became insufficient during processing");
-                    res.status(403).json({ ok: false, error: "Insufficient credits" });
+                    console.error(`[MEMBER] Credits became insufficient during processing requestId=${requestId}`);
+                    send(403, { ok: false, error: "Insufficient credits" });
                     return;
                 }
-                console.error(`[MEMBER] Failed to deduct credits: ${err}`);
-                res.status(500).json({ ok: false, error: "Failed to deduct credits" });
+                console.error(`[MEMBER] Failed to deduct credits requestId=${requestId}`, err);
+                send(500, { ok: false, error: "Failed to deduct credits" });
                 return;
             }
         }
 
-        res.json({ ok: true, results, errors, remainingCredits });
+        console.log(`[MEMBER] Generation complete requestId=${requestId} durationMs=${Date.now() - startedAt}`);
+        send(200, { ok: true, results, errors, remainingCredits });
+    };
 
-    } catch (error: any) {
-        logger.error("generateMemberMockups error", error);
-        console.error("[MEMBER] Critical error:", error);
-        // Ensure we handle objects correctly in JSON response
-        const message = error instanceof Error ? error.message : JSON.stringify(error);
-        res.status(500).json({ ok: false, error: message, requestId });
-    }
+    await work().catch(err => {
+        logger.error("generateMemberMockups error", err);
+        console.error("[MEMBER] Critical error:", err);
+        const message = err instanceof Error ? err.message : JSON.stringify(err);
+        send(500, { ok: false, error: message });
+    }).finally(() => clearTimeout(timeout));
 });
 
 // ============================================
@@ -2313,8 +2287,9 @@ export const createUserProfileOnAuth = functions.auth.user().onCreate(async (use
             }
 
             const profile = buildDefaultProfile(user.uid, user.email, user.displayName, user.emailVerified);
-            tx.set(userRef, profile);
-            logger.info(`[AuthTrigger] Created profile for ${user.uid} email=${user.email}`);
+            // Use set with merge to be ultra-safe against API collisions
+            tx.set(userRef, profile, { merge: true });
+            logger.info(`[AuthTrigger] Created/Merged profile for ${user.uid} email=${user.email}`);
         });
     } catch (err: any) {
         logger.error("[AuthTrigger] Failed to create profile", err);
