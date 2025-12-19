@@ -57,7 +57,6 @@ This document serves as a reference for any coding agents working on the SITU pr
     *   **Model Routing:** Kept forced routing to `gemini-2.5-flash-image` when AR is requested.
     *   **No Silent Fallback:** Removed prompt-only fallback to avoid masking AR failures.
     *   **Verification Logging:** Logs requested AR, endpoint/model, and output dimensions.
-*   **Follow-up:** Tightened seed dimensions to exact ratios and made the seed the first image so the model defaults to the correct aspect ratio even if it ignores prompt ordering.
 
 ---
 **Note:** Always ensure `npm run build` completes successfully before a `firebase deploy` to maintain stack consistency.
