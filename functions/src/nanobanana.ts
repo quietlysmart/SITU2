@@ -23,11 +23,11 @@ console.log("NanoBanana Config:", { MODEL_ID, apiKey: GENAI_API_KEY ? "Set" : "N
  */
 async function generateBlankPNG(aspectRatio: string): Promise<{ data: string; width: number; height: number }> {
     const dimensions: Record<string, { width: number; height: number }> = {
-        "1:1": { width: 512, height: 512 },
-        "16:9": { width: 896, height: 512 },
-        "9:16": { width: 512, height: 896 },
-        "4:3": { width: 640, height: 480 },
-        "3:4": { width: 480, height: 640 },
+        "1:1": { width: 256, height: 256 },
+        "16:9": { width: 320, height: 180 },
+        "9:16": { width: 180, height: 320 },
+        "4:3": { width: 320, height: 240 },
+        "3:4": { width: 240, height: 320 },
     };
 
     const { width, height } = dimensions[aspectRatio] || dimensions["1:1"];
@@ -117,7 +117,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
 
         let prompt: string;
         if (aspectRatio) {
-            prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Your output image MUST match the exact aspect ratio of the SECOND image provided (the blank seed). Do not match the aspect ratio of the first image (the artwork). Output ONLY the generated image.`.trim();
+            prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: The FIRST image is a blank seed that defines the target aspect ratio. The SECOND image is the artwork to integrate. Match the FIRST image's aspect ratio exactly. Output ONLY the generated image.`.trim();
         } else {
             prompt = `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions.`.trim();
         }
@@ -136,16 +136,15 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
         const imageBase64 = Buffer.from(imageBuffer).toString('base64');
         const mimeType = imageResp.headers.get("content-type") || "image/jpeg";
 
-        const parts: any[] = [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: imageBase64 } }
-        ];
+        const parts: any[] = [{ text: prompt }];
 
         if (aspectRatio) {
             const seed = await generateBlankPNG(aspectRatio);
             console.log(`[NANOBANANA] Seeding with ${aspectRatio} blank PNG (${seed.width}x${seed.height})`);
             parts.push({ inline_data: { mime_type: "image/png", data: seed.data } });
         }
+
+        parts.push({ inline_data: { mime_type: mimeType, data: imageBase64 } });
 
         const body = { contents: [{ parts }] };
 
