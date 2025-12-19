@@ -39,13 +39,24 @@ This document serves as a reference for any coding agents working on the SITU pr
 - **Proper Awaiting:** The `/generateMemberMockups` handler now explicitly `await`s the asynchronous generation task. This ensures the function instance remains active until the image is created, storage is updated, and credits are deducted, even if a 202 response was already sent to the frontend.
 - **Single Response Guard:** Maintained a `responded` flag to ensure the function only sends one HTTP response (either the 200 success or the 202 background status).
 
-## 6. NanoBanana: Aspect Ratio Ignored
-**Problem:** The image generator would always output the aspect ratio of the original artwork, ignoring the user's selection in Member Studio. This was because the `aspectRatio` was only included in the text prompt, not as a formal API configuration parameter.
+### 2025-12-18: Fixed Aspect Ratio Bug (Strict Schema Enforcement)
 
-**Fixed Strategy:**
-- **Forced Model Routing:** Requests requiring specific aspect ratios are now automatically routed to `gemini-2.5-flash-image` (the "signifier" for the compatible path).
-- **Formal Config:** The API request now includes a `generationConfig` block with the formal `aspectRatio` parameter.
-- **Resilient Fallback:** If the API rejects the configuration (400 error), the system automatically falls back to a standard prompt-only request to ensure generation still succeeds.
+*   **Problem:** Generation was ignoring aspect ratio and defaulting to square (1024x1024), even when requested 16:9 or 9:16. Silent fallbacks were maskng API rejection and leading to wasted credits.
+*   **Solution:** 
+    *   **Strict Schema:** Switched to the official Gemini REST v1beta schema: a flat `aspectRatio` field inside `generationConfig`. Removed all padding hacks.
+    *   **Zero Silent Fallback:** Disabled retry-to-square on config rejection; the system now fails fast.
+    *   **Error Visibility:** Added logging of the full 400 response body from Google.
+    *   **Ratio Assertion:** Implemented a `sharp`-based verification after generation. If the AI returns the wrong ratio, the request is marked as a failure, preventing credit deduction.
+*   **Verification:** Observed dimensions and ratio in logs; verified that credit deduction transaction only fires if ratio is correct.
+
+### 2025-12-19: Restored Aspect Ratio Signifier (Seeded Image)
+
+*   **Problem:** The strict schema `generationConfig.aspectRatio` was rejected by Gemini REST (`Unknown name 'aspectRatio'`), so AR requests failed and outputs defaulted to square.
+*   **Solution:**
+    *   **Seed Signifier:** Restored the two-image request (artwork + blank seed image with target AR) that previously produced non-square outputs.
+    *   **Model Routing:** Kept forced routing to `gemini-2.5-flash-image` when AR is requested.
+    *   **No Silent Fallback:** Removed prompt-only fallback to avoid masking AR failures.
+    *   **Verification Logging:** Logs requested AR, endpoint/model, and output dimensions.
 
 ---
 **Note:** Always ensure `npm run build` completes successfully before a `firebase deploy` to maintain stack consistency.

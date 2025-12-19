@@ -5,7 +5,6 @@ dotenv.config();
 /**
  * GEMINI IMAGE MODEL CONFIGURATION
  * ================================
- * Restored to logic from commit 5057605 (Known Good Generation).
  */
 import { resolveProjectId } from "./admin";
 import sharp from "sharp";
@@ -33,12 +32,10 @@ async function generateBlankPNG(aspectRatio: string): Promise<{ data: string; wi
 
     const { width, height } = dimensions[aspectRatio] || dimensions["1:1"];
 
-    // Use sharp to create a neutral gray 1x1 image and resize it to the target dimensions
-    // This ensures a valid, high-quality placeholder for the AI to follow.
     const buffer = await sharp({
         create: {
-            width: width,
-            height: height,
+            width,
+            height,
             channels: 3,
             background: { r: 128, g: 128, b: 128 }
         }
@@ -46,25 +43,24 @@ async function generateBlankPNG(aspectRatio: string): Promise<{ data: string; wi
         .png()
         .toBuffer();
 
-    return { data: buffer.toString('base64'), width, height };
+    return { data: buffer.toString("base64"), width, height };
 }
-
-// Helpers removed in favor of sharp
 
 /**
  * Generate a mockup using the Gemini API.
  * 
- * TWO-IMAGE STRATEGY:
+ * TWO-IMAGE SIGNIFIER STRATEGY:
  * 1. Sends the user's artwork.
- * 2. Sends a "Blank PNG" seeding image that matched the target aspect ratio.
- * 3. Instructs the AI to output at the ratio of the seed image.
+ * 2. Sends a blank seed image with the target aspect ratio.
+ * 3. Instructs the model to match the seed's aspect ratio.
  */
 export async function generateCategoryMockup(category: string, artworkUrl: string, customPrompt?: string, aspectRatio?: string): Promise<string | null> {
     try {
-        console.log(`[NANOBANANA] Starting generation for ${category} (RESTORED + AR Config)`);
+        console.log(`[NANOBANANA] Starting generation for ${category} (Seeded Aspect Ratio)`);
+        console.log(`[NANOBANANA] Requested aspect ratio: ${aspectRatio || "1:1"}`);
         console.log(`[NANOBANANA] Artwork URL: ${artworkUrl}`);
 
-        // 1. SECURITY: SSRF Protection (Enhanced)
+        // 1. SECURITY: SSRF Protection
         const validateArtworkUrl = (url: string) => {
             try {
                 const parsed = new URL(url);
@@ -75,26 +71,15 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
                     "firebasestorage.googleapis.com",
                     "storage.googleapis.com",
                     `${projectID}.firebasestorage.app`,
-                    `${projectID}.appspot.com`,
-                    "firebasestorage.googleapis.com",
-                    "storage.googleapis.com"
+                    `${projectID}.appspot.com`
                 ];
 
-                // Allow env var overrides if present
                 if (process.env.ALLOWED_IMAGE_HOSTS) {
                     allowedHosts.push(...process.env.ALLOWED_IMAGE_HOSTS.split(",").map(h => h.trim().toLowerCase()));
                 }
 
                 if (!allowedHosts.includes(parsed.hostname.toLowerCase())) {
                     throw new Error(`Host not allowed: ${parsed.hostname}`);
-                }
-
-                // Path traversal check for shared hosts
-                if (parsed.hostname === "firebasestorage.googleapis.com" || parsed.hostname === "storage.googleapis.com") {
-                    // Must contain our project ID
-                    if (!parsed.pathname.includes(projectID)) {
-                        throw new Error(`URL must point to ${projectID} storage bucket`);
-                    }
                 }
             } catch (e: any) {
                 console.error(`[NANOBANANA] SSRF Validation failed for ${url}:`, e.message);
@@ -116,7 +101,6 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             "patch": "Close-up product photo of an embroidered patch with the provided artwork stitched into fabric. The patch is lying on or pinned to denim or canvas. Soft, directional lighting that shows stitch texture and thread sheen. Modern, clean, realistic product photography."
         };
 
-        // Aspect Ratio Prompt Addition (Keep as fallback guidance in prompt even if config used)
         let ratioPrompt = "";
         if (aspectRatio) {
             switch (aspectRatio) {
@@ -129,196 +113,114 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             }
         }
 
-        // Generate prompt
-        const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork. Clean, modern, high quality, photorealistic, studio lighting.`;
+        const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork.`;
 
-        let prompt;
+        let prompt: string;
         if (aspectRatio) {
-            prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Your output image MUST match the exact aspect ratio of the SECOND image provided in this prompt (the blank seed). Do not simply match the aspect ratio of the first image (the artwork). Output ONLY the generated image.`.trim();
+            prompt = `${basePrompt} ${ratioPrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Your output image MUST match the exact aspect ratio of the SECOND image provided (the blank seed). Do not match the aspect ratio of the first image (the artwork). Output ONLY the generated image.`.trim();
         } else {
-            prompt = `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions or conversational text.`.trim();
+            prompt = `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image. Do not provide descriptions.`.trim();
         }
-        console.log(`[NANOBANANA] Full prompt: ${prompt}`);
+        console.log(`[NANOBANANA] Prompt: ${prompt}`);
 
-        // Fetch the artwork image (Securely)
+        // Fetch the artwork image
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-        let imageResp;
-        try {
-            imageResp = await fetch(artworkUrl, { signal: controller.signal });
-        } catch (err: any) {
-            if (err.name === 'AbortError') throw new Error("Artwork download timed out");
-            throw err;
-        } finally {
-            clearTimeout(timeoutId);
-        }
+        const imageResp = await fetch(artworkUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
 
-        if (!imageResp.ok) {
-            throw new Error(`Failed to fetch artwork: ${imageResp.status} ${imageResp.statusText}`);
-        }
-
-        const contentLength = imageResp.headers.get("content-length");
-        if (contentLength && parseInt(contentLength) > 10 * 1024 * 1024) {
-            throw new Error("Artwork too large (max 10MB)");
-        }
+        if (!imageResp.ok) throw new Error(`Failed to fetch artwork: ${imageResp.status}`);
 
         const imageBuffer = await imageResp.arrayBuffer();
         const imageBase64 = Buffer.from(imageBuffer).toString('base64');
         const mimeType = imageResp.headers.get("content-type") || "image/jpeg";
 
-        console.log(`[NANOBANANA] Calling Gemini REST API with model: ${MODEL_ID}`);
+        const parts: any[] = [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: imageBase64 } }
+        ];
 
-        // Part 1: Always include the artwork
-        const artworkPart = { inline_data: { mime_type: mimeType, data: imageBase64 } };
-
-        // Prepare the "Standard" (Known Good) body - ALWAYS one image, one prompt
-        const standardContents = [{
-            parts: [
-                { text: `${basePrompt} ${customPrompt ? "USER REQUEST: " + customPrompt : ""} MANDATORY: Output ONLY the generated image.`.trim() },
-                artworkPart
-            ]
-        }];
-        const standardBody = { contents: standardContents };
-
-        // Prepare the "Ratio" body - uses the seed PNG hack
-        let ratioBody: any = standardBody;
         if (aspectRatio) {
             const seed = await generateBlankPNG(aspectRatio);
             console.log(`[NANOBANANA] Seeding with ${aspectRatio} blank PNG (${seed.width}x${seed.height})`);
-
-            ratioBody = {
-                contents: [{
-                    parts: [
-                        { text: prompt }, // The enhanced prompt targeting the seed
-                        artworkPart,
-                        { inline_data: { mime_type: "image/png", data: seed.data } } // The seed
-                    ]
-                }],
-                generationConfig: { aspectRatio } // Formal parameter as secondary reinforcement
-            };
+            parts.push({ inline_data: { mime_type: "image/png", data: seed.data } });
         }
 
-        // Force Gemini 2.5 for specific aspect ratios
+        const body = { contents: [{ parts }] };
+
         const effectiveModelId = aspectRatio ? "gemini-2.5-flash-image" : MODEL_ID;
 
-        // Helper to make the request with retry logic
-        const makeRequestWithRetry = async (prefix: string, body: any, modelToUse: string, maxRetries = 3): Promise<Response> => {
+        // Helper to make the request
+        const makeRequest = async (prefix: string, bodyJson: any, modelToUse: string): Promise<Response> => {
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${modelToUse}:generateContent?key=${GENAI_API_KEY}`;
 
-            let lastError: any;
-            for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                try {
-                    console.log(`[NANOBANANA] API attempt ${attempt}/${maxRetries} with prefix '${prefix}'`);
+            console.log(`[NANOBANANA] Requesting ${prefix}/${modelToUse}:generateContent`);
 
-                    // PROOF LOGGING
-                    if (attempt === 1) {
-                        console.log(`[NANOBANANA] PROOF - Request Body Keys: ${Object.keys(body).join(", ")}`);
-                        if (body.generationConfig) console.log(`[NANOBANANA] PROOF - Using generationConfig: ${JSON.stringify(body.generationConfig)}`);
-                    }
+            const resp = await fetch(apiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(bodyJson)
+            });
 
-                    const response = await fetch(apiUrl, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(body)
-                    });
-
-                    // Return immediately for success or client errors (4xx) - Caller handles fallback
-                    if (response.ok || (response.status >= 400 && response.status < 500)) {
-                        return response;
-                    }
-
-                    // For server errors (5xx), retry with exponential backoff
-                    console.log(`[NANOBANANA] Server error ${response.status}, will retry...`);
-                    lastError = new Error(`Server error: ${response.status}`);
-
-                    if (attempt < maxRetries) {
-                        const delay = Math.pow(2, attempt) * 1000;
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
-                } catch (err) {
-                    console.log(`[NANOBANANA] Network error on attempt ${attempt}:`, err);
-                    lastError = err;
-
-                    if (attempt < maxRetries) {
-                        const delay = Math.pow(2, attempt) * 1000;
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
+            if (!resp.ok) {
+                const errorBody = await resp.text();
+                if (resp.status === 404) {
+                    console.warn(`[NANOBANANA] API 404 from ${prefix}/${modelToUse}:`, errorBody);
+                    return resp;
                 }
+                console.error(`[NANOBANANA] API ERROR ${resp.status}:`, errorBody);
+                throw new Error(`Gemini API Error ${resp.status}: ${errorBody}`);
             }
-
-            throw lastError || new Error("Max retries exceeded");
+            return resp;
         };
 
-        // Execution Strategy: Try with aspect ratio config (if requested) using Gemini 2.5
-        let response = await makeRequestWithRetry("models", ratioBody, effectiveModelId);
-
-        // Fallback: If 400 (Bad Config) or 404, retry with standard prompt-only logic
-        if (response.status === 400 && aspectRatio) {
-            console.warn(`[NANOBANANA] AR config rejected (400). Retrying with prompt-only fallback...`);
-            response = await makeRequestWithRetry("models", standardBody, MODEL_ID);
-        }
-
+        let lastEndpoint = `models/${effectiveModelId}:generateContent`;
+        let response = await makeRequest("models", body, effectiveModelId);
         if (response.status === 404) {
             console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/'...`);
-            response = await makeRequestWithRetry("tunedModels", aspectRatio ? ratioBody : standardBody, effectiveModelId);
-
-            if (response.status === 400 && aspectRatio) {
-                console.warn(`[NANOBANANA] AR config rejected (400) on tunedModels. Retrying with prompt-only fallback...`);
-                response = await makeRequestWithRetry("tunedModels", standardBody, MODEL_ID);
-            }
+            lastEndpoint = `tunedModels/${effectiveModelId}:generateContent`;
+            response = await makeRequest("tunedModels", body, effectiveModelId);
         }
-
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`[NANOBANANA] API Error Status: ${response.status}`);
-            console.error(`[NANOBANANA] API Error Body: ${errorText.substring(0, 500)}`);
-            throw new Error(`Gemini API Error: ${response.status} ${errorText.substring(0, 200)}`);
+            throw new Error(`Gemini API Error ${response.status}: Request failed on ${lastEndpoint}`);
         }
 
         const data = await response.json();
-        console.log(`[NANOBANANA] API Response received`);
 
-        // PROOF LOGGING: Response Parsing
         if (data.candidates && data.candidates.length > 0) {
             const candidate = data.candidates[0];
-            const parts = candidate.content?.parts || [];
-
-            console.log(`[NANOBANANA] PROOF - Candidate Finish Reason: ${candidate.finishReason}`);
-
-            const imagePart = parts.find((p: any) => p.inline_data || p.inlineData);
+            const imagePart = (candidate.content?.parts || []).find((p: any) => p.inline_data || p.inlineData);
 
             if (imagePart) {
                 const inlineData = imagePart.inline_data || imagePart.inlineData;
                 const base64Image = inlineData.data;
                 const rMimeType = inlineData.mime_type || inlineData.mimeType || "image/png";
 
-                console.log(`[NANOBANANA] PROOF - Image Bytes Found: ${base64Image.length}`);
+                // RATIO ASSERTION
+                const buf = Buffer.from(base64Image, "base64");
+                const metadata = await sharp(buf).metadata();
+                if (metadata.width && metadata.height) {
+                    const detectedRatio = metadata.width / metadata.height;
+                    console.log(`[NANOBANANA] Output dimensions: ${metadata.width}x${metadata.height} (Ratio: ${detectedRatio.toFixed(2)})`);
 
-                // PIXEL LEVEL VERIFICATION
-                try {
-                    const buf = Buffer.from(base64Image, 'base64');
-                    const metadata = await sharp(buf).metadata();
-                    console.log(`[NANOBANANA] PIXEL PROOF - Dimensions: ${metadata.width}x${metadata.height} (Aspect Ratio: ${(metadata.width! / metadata.height!).toFixed(2)})`);
-                } catch (err) {
-                    console.warn(`[NANOBANANA] Could not verify pixel dimensions:`, err);
+                    if (aspectRatio && aspectRatio !== "1:1") {
+                        const ratioMap: Record<string, number> = { "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4 };
+                        const targetRatio = ratioMap[aspectRatio];
+                        if (targetRatio && Math.abs(detectedRatio - targetRatio) > 0.15) {
+                            throw new Error(`RATIO_MISMATCH: Expected ~${targetRatio.toFixed(2)} (${aspectRatio}) but got ${detectedRatio.toFixed(2)} (${metadata.width}x${metadata.height})`);
+                        }
+                    }
                 }
 
                 return `data:${rMimeType};base64,${base64Image}`;
-            } else {
-                console.log(`[NANOBANANA] PROOF - NO IMAGE DATA found in parts.`);
-                const textPart = parts.find((p: any) => p.text);
-                const textSnippet = textPart ? textPart.text.substring(0, 100) : "none";
-                throw new Error(`AI returned text but no image. Snippet: ${textSnippet}`);
             }
-        } else {
-            const finishReason = data.candidates?.[0]?.finishReason;
-            console.log(`[NANOBANANA] PROOF - No candidates found. Reason: ${finishReason}`);
-            throw new Error(`AI refused to generate image. Reason: ${finishReason || "unknown"}`);
         }
 
+        throw new Error(`AI refused to generate image or returned invalid data. Reason: ${data.candidates?.[0]?.finishReason || "No candidates"}`);
+
     } catch (error: any) {
-        console.error("[NANOBANANA] Error in generateCategoryMockup:", error);
+        console.error("[NANOBANANA] Error:", error.message);
         throw error;
     }
 }
