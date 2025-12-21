@@ -6,6 +6,7 @@ import { collection, addDoc, query, onSnapshot, doc, orderBy, serverTimestamp } 
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router-dom";
+import { bootstrapUserProfile } from "../lib/profile";
 import type { Artwork, Mockup } from "../types";
 
 export function MemberStudio() {
@@ -35,6 +36,7 @@ export function MemberStudio() {
     const [userPlan, setUserPlan] = useState<string>("free");
     const [profileStatus, setProfileStatus] = useState<"idle" | "ensuring" | "ready" | "error">("idle");
     const ensureAttemptedRef = useRef(false);
+    const bootstrapAttemptedRef = useRef(false);
     const computeCredits = (data: any) => {
         const monthly = typeof data?.monthlyCreditsRemaining === "number" ? data.monthlyCreditsRemaining : 0;
         const bonus = typeof data?.bonusCredits === "number" ? data.bonusCredits : 0;
@@ -50,13 +52,13 @@ export function MemberStudio() {
     const ensureProfile = useCallback(async (force = false) => {
         if (!user || (ensureAttemptedRef.current && !force)) return;
         ensureAttemptedRef.current = true;
-        if (!user || (ensureAttemptedRef.current && !force)) return;
-        ensureAttemptedRef.current = true;
         try {
             // Force refresh token if retrying
             const token = await user.getIdToken(force);
             const apiUrl = import.meta.env.PROD ? "/api/user/ensureProfile" : `${import.meta.env.VITE_API_BASE_URL}/user/ensureProfile`;
-            const clientRequestId = crypto.randomUUID();
+            const clientRequestId = typeof globalThis.crypto?.randomUUID === "function"
+                ? globalThis.crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
             const resp = await fetch(apiUrl, {
                 method: "POST",
                 headers: {
@@ -117,6 +119,7 @@ export function MemberStudio() {
 
     useEffect(() => {
         ensureAttemptedRef.current = false;
+        bootstrapAttemptedRef.current = false;
         setProfileStatus("idle");
         setProfileError(null);
     }, [user?.uid]);
@@ -161,6 +164,12 @@ export function MemberStudio() {
                 }
                 setProfileStatus("ensuring");
                 ensureProfile();
+                if (!bootstrapAttemptedRef.current && user) {
+                    bootstrapAttemptedRef.current = true;
+                    bootstrapUserProfile(user).catch(err => {
+                        console.warn("[MemberStudio] Profile bootstrap failed", err);
+                    });
+                }
                 if (!profileTimeout) {
                     profileTimeout = setTimeout(() => {
                         // Use functional update to check if we already have a specific error

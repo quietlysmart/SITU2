@@ -58,5 +58,29 @@ This document serves as a reference for any coding agents working on the SITU pr
     *   **No Silent Fallback:** Removed prompt-only fallback to avoid masking AR failures.
     *   **Verification Logging:** Logs requested AR, endpoint/model, and output dimensions.
 
+### 2025-12-19: Aspect Ratio Regression Rollback (Final State)
+
+*   **Problem:** After several schema/ordering experiments, Gemini continued returning 1:1 when the artwork was square.
+*   **Resolution:** Reverted to the last known-good seeded-signifier request: artwork + blank PNG seed, no `generationConfig.aspectRatio`, no prompt-only fallback, forced `gemini-2.5-flash-image` when AR is requested, and output dimension logging + ratio assertion remain enabled.
+
+### 2025-12-21: Account Creation Permissions & EnsureProfile Guard
+
+*   **Problem:** New auth users were missing Firestore profiles (no credits, invisible in admin). Logs showed `createUserProfileOnAuth` failing with `PERMISSION_DENIED`. Client-side fallback was also blocked on some browsers and the Member Studio ensureProfile call was short-circuited.
+*   **Code Changes:**
+    *   **Firestore Rules:** Loosened `isDefaultProfile()` in `firestore.rules` to allow missing auth token claims and validate timestamps by type instead of strict equality.
+    *   **Member Studio:** Added a `crypto.randomUUID` fallback in `MemberStudio.tsx` and removed a duplicate guard that prevented `ensureProfile()` from running.
+*   **Infra Change (User Applied):**
+    *   Granted `roles/datastore.user` to `situ-477910@appspot.gserviceaccount.com` (gen1) and `116436042338-compute@developer.gserviceaccount.com` (gen2) so Auth triggers can write to Firestore.
+
+### 2025-12-21: Aspect Ratio Recovery (Seeded Multi-Strategy + Reframe)
+
+*   **Problem:** Aspect ratio requests were still returning 1:1 despite seeded signifiers, producing `RATIO_MISMATCH` failures.
+*   **Solution:**
+    *   **Stronger Seed:** Enlarged the blank seed PNG and added a visible border so the model sees a clear aspect ratio frame.
+    *   **Multi-Strategy:** Attempted both artwork-first + seed-second and seed-first + artwork-second with explicit prompt guidance.
+    *   **Reframe Fallback:** Added a second-pass reframe/outpaint attempt using the last generated image plus the seed.
+    *   **Model Fallback:** Routed AR attempts through a primary AR model with a fallback model.
+*   **Result:** Aspect ratio outputs match expected targets and generation succeeds.
+
 ---
 **Note:** Always ensure `npm run build` completes successfully before a `firebase deploy` to maintain stack consistency.

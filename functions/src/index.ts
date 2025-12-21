@@ -296,6 +296,65 @@ app.post("/user/ensureProfile", async (req, res) => {
     }
 });
 
+// Diagnostic endpoint for troubleshooting permissions
+app.get("/debug/diagnose", async (req, res) => {
+    const requestId = crypto.randomUUID();
+    const results: any = { requestId, timestamp: new Date().toISOString() };
+
+    // 1. Environment & Project
+    results.env = {
+        GCLOUD_PROJECT: process.env.GCLOUD_PROJECT,
+        GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT,
+        FIREBASE_CONFIG: !!process.env.FIREBASE_CONFIG,
+        NODE_ENV: process.env.NODE_ENV,
+        ProjectId_Resolved: resolveProjectId(),
+        StorageBucket_Resolved: getStorageBucketName(),
+    };
+
+    // 2. Service Account Identity (Metadata Server)
+    try {
+        // Use global fetch (Node 18+)
+        const metadataRes = await fetch("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email", {
+            headers: { "Metadata-Flavor": "Google" } as any,
+            signal: AbortSignal.timeout(2000)
+        });
+        if (metadataRes.ok) {
+            results.serviceAccount = await metadataRes.text();
+            results.serviceAccountSource = "metadata-server";
+        } else {
+            results.serviceAccountError = `Metadata server returned ${metadataRes.status}`;
+        }
+    } catch (err: any) {
+        results.serviceAccountError = err.message;
+        results.serviceAccountInferred = "unknown (likely local emulator or metadata unreachable)";
+    }
+
+    // 3. Firestore Permissions Check
+    try {
+        const diagRef = db.collection("_diagnostics").doc(`test_${requestId}`);
+        await diagRef.set({
+            test: "write",
+            timestamp: FieldValue.serverTimestamp(),
+            serviceAccount: results.serviceAccount || "unknown",
+            env: process.env.GCLOUD_PROJECT || "unknown"
+        });
+        results.firestoreWrite = "SUCCESS";
+
+        // Clean up
+        await diagRef.delete();
+        results.firestoreDelete = "SUCCESS";
+    } catch (err: any) {
+        results.firestoreWrite = "FAILED";
+        results.firestoreError = {
+            code: err.code,
+            message: err.message
+        };
+    }
+
+    safeLog("info", "[Diagnose] Results", results);
+    res.json({ ok: true, results });
+});
+
 // Debug endpoint: whoami + token metadata
 app.get("/debug/whoami", async (req, res) => {
     const requestId = (req.headers["x-request-id"] as string) || crypto.randomUUID();

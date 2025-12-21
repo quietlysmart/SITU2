@@ -14,13 +14,42 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && request.auth.token.admin == true;
     }
+
+    function isDefaultProfile() {
+      return request.resource.data.keys().hasOnly([
+        'email',
+        'displayName',
+        'emailVerified',
+        'plan',
+        'bonusCredits',
+        'monthlyCreditsRemaining',
+        'credits',
+        'isAdmin',
+        'subscriptionStatus',
+        'createdAt',
+        'updatedAt',
+        'creditsResetAt'
+      ])
+      && (request.auth.token.email == null || request.resource.data.email == request.auth.token.email)
+      && (request.auth.token.email_verified == null || request.resource.data.emailVerified == request.auth.token.email_verified)
+      && request.resource.data.plan == 'free'
+      && request.resource.data.bonusCredits == 12
+      && request.resource.data.monthlyCreditsRemaining == 0
+      && request.resource.data.credits == 12
+      && request.resource.data.isAdmin == false
+      && request.resource.data.subscriptionStatus == null
+      && request.resource.data.creditsResetAt == null
+      && request.resource.data.createdAt is timestamp
+      && request.resource.data.updatedAt is timestamp;
+    }
     
     match /users/{userId} {
       // Read: owner or admin
       allow read: if isOwner(userId) || isAdmin();
       
-      // Client creation is handled by backend auth trigger
-      allow create: if false;
+      // Allow client creation when it matches the default profile exactly.
+      // This is a fallback for regions where backend triggers are blocked.
+      allow create: if isOwner(userId) && isDefaultProfile();
       
       // Allow limited updates by owner; admins can update as needed
       allow update: if (isOwner(userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email']))

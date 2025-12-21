@@ -4,6 +4,7 @@ import { auth, db } from "../lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { bootstrapUserProfile } from "../lib/profile";
 
 export function Signup() {
     const [name, setName] = useState("");
@@ -73,6 +74,9 @@ export function Signup() {
             // Update Auth Profile
             await updateProfile(user, { displayName: name });
             ensureProfile(user); // Fire-and-forget to avoid blocking the UI
+            bootstrapUserProfile(user).catch(err => {
+                console.warn("[Signup] Profile bootstrap failed", err);
+            });
 
             // Claim Guest Session if present
             if (guestSessionId) {
