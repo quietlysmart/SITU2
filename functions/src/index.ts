@@ -10,7 +10,7 @@ import * as admin from "firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 import * as crypto from "crypto";
 import { generateCategoryMockup } from "./nanobanana";
-import { GuestMockupRequest, GuestMockupResponse, SendGuestMockupsRequest } from "./types";
+
 import { emailService } from "./emailService";
 import { purgeUserByUidOrEmail } from "./purgeHelper";
 import { db, auth, resolveProjectId, getStorageBucketName } from "./admin";
@@ -122,9 +122,9 @@ function buildDefaultProfile(uid: string, email = "", displayName = "", emailVer
         displayName,
         emailVerified,
         plan: "free",
-        bonusCredits: 12,
+        bonusCredits: 10,
         monthlyCreditsRemaining: 0,
-        credits: 12,
+        credits: 10,
         isAdmin: false,
         subscriptionStatus: null,
         createdAt: FieldValue.serverTimestamp(),
@@ -407,15 +407,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
     });
 });
 
-function getClientIp(req: express.Request): string {
-    // Priority: Google App Engine/Cloud Functions header -> Fastly/Firebase -> Direct IP
-    const ip = (req.headers["x-appengine-user-ip"] as string) ||
-        (req.headers["fastly-client-ip"] as string) ||
-        req.ip ||
-        req.socket.remoteAddress ||
-        "unknown";
-    return ip.replace(/[^a-zA-Z0-9:._-]/g, "_");
-}
+
 
 function isAllowedImageUrl(url: string): boolean {
     try {
@@ -641,269 +633,11 @@ async function uploadDataUrl(dataUrl: string, path: string): Promise<string> {
     return url;
 }
 
-app.post("/generateGuestMockups", async (req, res) => {
-    const start = Date.now();
-    const requestId = crypto.randomUUID();
-    let clientIp = "unknown";
-
-    try {
-        let { artworkUrl } = req.body as GuestMockupRequest;
-        clientIp = getClientIp(req);
-
-        logger.info(`[generateGuestMockups] Start ${requestId} IP:${clientIp}`);
-
-        if (!artworkUrl) {
-            res.status(400).json({ ok: false, error: "Missing artworkUrl" });
-            return;
-        }
-        if (!isDataUrl(artworkUrl) && !isAllowedImageUrl(artworkUrl)) {
-            res.status(400).json({ ok: false, error: "Invalid artwork URL. Upload the image directly." });
-            return;
-        }
-
-        // Rate limiting: Check IP for abuse (max 10 sessions per IP per day)
-        const rateLimitKey = `rate_limit_guest_${clientIp.replace(/\./g, "_")}`;
-        const rateLimitRef = db.collection("rate_limits").doc(rateLimitKey);
-        let rateLimitDoc;
-
-        try {
-            rateLimitDoc = await rateLimitRef.get();
-        } catch (err: any) {
-            console.error("[generateGuestMockups] Rate Limit Read Error:", err);
-            throw new Error(`Rate Limit Check Failed: ${err.message}`);
-        }
-
-        const now = Date.now();
-        const oneDayAgo = now - (24 * 60 * 60 * 1000);
-        const GUEST_SESSION_LIMIT = 10; // Max 10 guest sessions per IP per day
-
-        if (rateLimitDoc.exists) {
-            const data = rateLimitDoc.data()!;
-            const lastReset = data.lastReset?.toMillis?.() || 0;
-            const count = data.count || 0;
-
-            if (lastReset > oneDayAgo && count >= GUEST_SESSION_LIMIT) {
-                logger.warn(`[generateGuestMockups] Rate limit exceeded for IP: ${clientIp}`);
-                res.status(429).json({
-                    ok: false,
-                    error: "You've reached the daily limit for free mockups. Please try again tomorrow or sign up for a membership!"
-                });
-                return;
-            }
-
-            // Reset if more than a day has passed
-            try {
-                if (lastReset <= oneDayAgo) {
-                    await rateLimitRef.set({ count: 1, lastReset: FieldValue.serverTimestamp() });
-                } else {
-                    await rateLimitRef.update({ count: FieldValue.increment(1) });
-                }
-            } catch (err: any) {
-                console.error("[generateGuestMockups] Rate Limit Write Error:", err);
-                throw new Error(`Rate Limit Write Failed: ${err.message}`);
-            }
-        } else {
-            try {
-                await rateLimitRef.set({ count: 1, lastReset: FieldValue.serverTimestamp() });
-            } catch (err: any) {
-                console.error("[generateGuestMockups] Rate Limit Init Error:", err);
-                throw new Error(`Rate Limit Init Failed: ${err.message}`);
-            }
-        }
-
-        // Create a session ID first
-        const sessionRef = db.collection("guest_sessions").doc();
-        const sessionId = sessionRef.id;
-
-        logger.info(`[generateGuestMockups] New guest session created: ${sessionId} from IP: ${clientIp}`);
-
-        // If artworkUrl is a base64 Data URL, upload it to Storage first
-        // to avoid hitting Firestore 1MB limit.
-        if (artworkUrl.startsWith("data:")) {
-            try {
-                const storagePath = `guest_sessions/${sessionId}/original_artwork_${Date.now()}.png`;
-                artworkUrl = await uploadDataUrl(artworkUrl, storagePath);
-                logger.info(`[generateGuestMockups] Uploaded base64 artwork to ${artworkUrl}`);
-            } catch (err: any) {
-                logger.error("[generateGuestMockups] Failed to upload input artwork", err);
-                // We could fail hard, or try to proceed if it's small enough (but likely it's not)
-                res.status(500).json({ ok: false, error: "Failed to process artwork image." });
-                return;
-            }
-        }
-
-        // Generate mockups
-        const categories = ["wall", "prints", "wearable", "phone"] as const;
-        logger.info(`[generateGuestMockups] Starting generation for ${categories.length} categories...`);
-
-        // 1. Generate all in PARALLEL
-        const generationPromises = categories.map(async (category) => {
-            try {
-                const genStart = Date.now();
-                const dataUrl = await generateCategoryMockup(category, artworkUrl);
-                const duration = Date.now() - genStart;
-
-                if (dataUrl) {
-                    const size = dataUrl.length;
-                    logger.info(`[generateGuestMockups] Generated ${category} (${size} bytes) in ${duration}ms`);
-                    return { category, dataUrl, error: null };
-                } else {
-                    return { category, dataUrl: null, error: "Generation failed (null result)" };
-                }
-            } catch (error: any) {
-                logger.error(`Error generating ${category}:`, error);
-                return { category, dataUrl: null, error: error.message };
-            }
-        });
-
-        const genResults = await Promise.all(generationPromises);
-
-        // 2. Upload generated mockups to Storage in PARALLEL
-        const uploadPromises = genResults.map(async (item) => {
-            if (item.error || !item.dataUrl) {
-                return { category: item.category, url: null, error: item.error };
-            }
-
-            try {
-                const storagePath = `guest_sessions/${sessionId}/${item.category}_${Date.now()}.png`;
-                const storageUrl = await uploadDataUrl(item.dataUrl, storagePath);
-                return { category: item.category, url: storageUrl, error: null };
-            } catch (error: any) {
-                logger.error(`Error uploading ${item.category}:`, error);
-                return { category: item.category, url: null, error: `Upload failed: ${error.message}` };
-            }
-        });
-
-        const finalResults = await Promise.all(uploadPromises);
-
-        const results: GuestMockupResponse["results"] = [];
-        const errors: GuestMockupResponse["errors"] = [];
-
-        finalResults.forEach(item => {
-            if (item.url) {
-                results.push({ category: item.category as any, url: item.url });
-            } else {
-                errors.push({ category: item.category as any, message: item.error || "Unknown error" });
-            }
-        });
-
-        const totalTime = Date.now() - start;
-        logger.info(`[generateGuestMockups] Finished in ${totalTime}ms. Success: ${results.length}, Errors: ${errors.length}`);
-
-        // 3. Store guest session with STORAGE URLs (small strings)
-        if (results.length > 0) {
-            await sessionRef.set({
-                results,
-                createdAt: FieldValue.serverTimestamp(),
-                status: "generated",
-                artworkUrl // Now this is a short https:// URL
-            });
-        } else {
-            const lastError = errors.length > 0 ? errors[0].message : "Unknown error";
-            res.status(500).json({
-                ok: false,
-                error: `All generations failed: ${lastError}`,
-                errors
-            });
-            return;
-        }
-
-        const response: GuestMockupResponse = {
-            ok: true,
-            sessionId: results.length > 0 ? sessionId : undefined,
-            results,
-            errors,
-        };
-
-        res.json(response);
-    } catch (error: any) {
-        logger.error(`[generateGuestMockups] Fatal error (Request ${requestId}):`, error);
-        res.status(500).json({ ok: false, error: error.message, requestId });
-    }
-});
 
 
 
-app.post("/sendGuestMockups", async (req, res) => {
-    try {
-        const { email, sessionId } = req.body as SendGuestMockupsRequest;
 
-        if (!email) {
-            res.status(400).json({ ok: false, error: "Missing email" });
-            return;
-        }
-        if (!sessionId) {
-            res.status(400).json({ ok: false, error: "Missing sessionId" });
-            return;
-        }
 
-        const clientIp = getClientIp(req);
-        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-        const emailRateLimitKey = `rate_limit_email_${clientIp}_${today}`;
-        const emailRateLimitRef = db.collection("rate_limits").doc(emailRateLimitKey);
-
-        const emailRateLimitDoc = await emailRateLimitRef.get();
-        const EMAIL_PER_DAY_LIMIT = 5;
-        if (emailRateLimitDoc.exists && (emailRateLimitDoc.data()?.count || 0) >= EMAIL_PER_DAY_LIMIT) {
-            res.status(429).json({ ok: false, error: "Too many email requests from this IP today. Please try again tomorrow." });
-            return;
-        }
-
-        const sessionRef = db.collection("guest_sessions").doc(sessionId);
-        const sessionDoc = await sessionRef.get();
-
-        if (!sessionDoc.exists) {
-            res.status(404).json({ ok: false, error: "Guest session not found" });
-            return;
-        }
-
-        const sessionData = sessionDoc.data();
-        if (sessionData?.status === "email_sent") {
-            res.status(400).json({ ok: false, error: "Email already sent for this session." });
-            return;
-        }
-
-        if (sessionData?.email && sessionData.email.toLowerCase() !== email.toLowerCase()) {
-            res.status(403).json({ ok: false, error: "Email mismatch for this session." });
-            return;
-        }
-
-        const urlsToSend: string[] = sessionData?.results?.map((r: any) => r.url).filter(Boolean) || [];
-        if (urlsToSend.length === 0) {
-            res.status(400).json({ ok: false, error: "No mockups to send." });
-            return;
-        }
-
-        // Update rate limit counter
-        if (emailRateLimitDoc.exists) {
-            await emailRateLimitRef.update({ count: FieldValue.increment(1) });
-        } else {
-            await emailRateLimitRef.set({ count: 1, lastReset: FieldValue.serverTimestamp() });
-        }
-
-        // Mark pending and send
-        await sessionRef.update({
-            email,
-            status: "pending_email",
-            emailRequestsAt: FieldValue.serverTimestamp()
-        });
-
-        await emailService.sendGuestMockups({
-            email,
-            mockupUrls: urlsToSend
-        });
-
-        await sessionRef.update({
-            status: "email_sent",
-            emailSentAt: FieldValue.serverTimestamp()
-        });
-
-        res.json({ ok: true });
-    } catch (error: any) {
-        logger.error("sendGuestMockups error", error);
-        res.status(500).json({ ok: false, error: error.message });
-    }
-});
 
 app.post("/createCheckoutSession", async (req, res) => {
     try {
@@ -920,8 +654,10 @@ app.post("/createCheckoutSession", async (req, res) => {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
 
-        // Map plan to Price ID from Env
         let priceId = "";
+        let mode: Stripe.Checkout.SessionCreateParams.Mode = "subscription"; // Default to sub
+        let metadata: Record<string, string> = { firebaseUid: uid };
+
         // Strict mapping based on user request
         switch (plan) {
             case "monthly":
@@ -931,7 +667,14 @@ app.post("/createCheckoutSession", async (req, res) => {
                 priceId = process.env.STRIPE_PRICE_QUARTERLY_ID || "";
                 break;
             case "sixMonths":
+                // Existing logic or fallback
                 priceId = process.env.STRIPE_PRICE_SIX_MONTHS_ID || "";
+                break;
+            case "topup":
+                priceId = process.env.STRIPE_PRICE_TOPUP_ID || "";
+                mode = "payment"; // One-time payment
+                metadata.type = "credit_topup";
+                metadata.credits = "50";
                 break;
             default:
                 logger.error(`[createCheckoutSession] Invalid plan: ${plan}`);
@@ -988,10 +731,10 @@ app.post("/createCheckoutSession", async (req, res) => {
             customer: customerId,
             payment_method_types: ["card"],
             line_items: [{ price: priceId, quantity: 1 }],
-            mode: "subscription",
+            mode: mode,
             success_url: `${txnSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: txnCancelUrl,
-            metadata: { firebaseUid: uid },
+            metadata: metadata,
         });
 
         logger.info(`[createCheckoutSession] Session created: ${session.id}`);
@@ -1252,110 +995,7 @@ app.post("/createTopUpSession", async (req, res) => {
     }
 });
 
-app.post("/claimGuestSession", async (req, res) => {
-    try {
-        const { sessionId } = req.body;
 
-        logger.info(`[claimGuestSession] Request received for session: ${sessionId}`);
-
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-            res.status(401).json({ ok: false, error: "Unauthorized" });
-            return;
-        }
-        const idToken = authHeader.split("Bearer ")[1];
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        const uid = decodedToken.uid;
-        const email = decodedToken.email;
-
-        if (!sessionId) {
-            res.status(400).json({ ok: false, error: "Missing sessionId" });
-            return;
-        }
-
-        const sessionRef = db.collection("guest_sessions").doc(sessionId);
-        const sessionDoc = await sessionRef.get();
-
-        if (!sessionDoc.exists) {
-            res.status(404).json({ ok: false, error: "Guest session not found" });
-            return;
-        }
-
-        const sessionData = sessionDoc.data();
-        if (sessionData?.claimedBy) {
-            res.status(400).json({ ok: false, error: "Session already claimed" });
-            return;
-        }
-
-        // Verify email match if possible (optional but good for security)
-        // If guest session has no email (didn't send yet), we might let them claim if they just created it?
-        // But usually they enter email to send.
-        if (sessionData?.email && sessionData.email !== email) {
-            logger.warn(`[claimGuestSession] Email mismatch. Session: ${sessionData.email}, User: ${email}`);
-            // We'll allow it for now as user might sign up with different email, but it's a bit risky.
-            // User requirement: "If guestSessionId is present and the guest session’s email matches the signup email"
-            // So we MUST enforce it.
-            // RELAXED SECURITY: We'll allow claim even if email mismatches, assuming possession of sessionId is sufficient proof.
-            // This fixes issues where users make typos or change their mind about which email to use.
-            logger.warn(`[claimGuestSession] Email mismatch allowed. Session: ${sessionData.email}, User: ${email}`);
-
-            // Previously was strict:
-            // res.status(403).json({ ok: false, error: "Email mismatch..." });
-            // return;
-        }
-
-
-        const artworkUrl = sessionData?.artworkUrl;
-        const results = sessionData?.results || [];
-
-        logger.info(`[claimGuestSession] Found ${results.length} mockups to allow copy.`);
-
-        // 1. Copy artwork
-        if (artworkUrl) {
-            logger.info(`[claimGuestSession] Copying artwork: ${artworkUrl}`);
-            await db.collection("users").doc(uid).collection("artworks").add({
-                url: artworkUrl,
-                name: "Imported from Guest Studio",
-                createdAt: FieldValue.serverTimestamp(),
-            });
-        } else {
-            logger.warn("[claimGuestSession] No artworkUrl found in session.");
-        }
-
-        // 2. Copy mockups
-        if (results.length > 0) {
-            const batch = db.batch();
-            for (const item of results) {
-                const mockupRef = db.collection("users").doc(uid).collection("mockups").doc(); // Auto-ID
-                batch.set(mockupRef, {
-                    category: item.category,
-                    url: item.url,
-                    artworkUrl: artworkUrl, // Link loosely
-                    createdAt: FieldValue.serverTimestamp(),
-                    importedFromGuest: true
-                });
-            }
-            await batch.commit();
-            logger.info(`[claimGuestSession] Copied ${results.length} mockups to user text.`);
-        } else {
-            logger.warn("[claimGuestSession] No results array found to copy.");
-        }
-
-        // 3. Mark session as claimed
-        await sessionRef.update({
-            claimedBy: uid,
-            claimedAt: FieldValue.serverTimestamp()
-        });
-
-        logger.info(`[claimGuestSession] Successfully claimed session ${sessionId} for user ${uid}`);
-
-        res.json({ ok: true, copiedCount: results.length });
-
-    } catch (error: any) {
-        logger.error("claimGuestSession error", error);
-        res.status(500).json({ ok: false, error: error.message });
-    }
-});
 
 app.post("/stripeWebhook", express.raw({ type: "application/json" }), async (req, res) => {
     const sig = req.headers["stripe-signature"];
@@ -1461,7 +1101,16 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
         const extraUpdates: Record<string, any> = {};
 
         if (billingReason === "subscription_create" || billingReason === "subscription_cycle") {
-            nextMonthly = 50;
+            // v1.6 Pricing Logic:
+            // Monthly ($15) -> 200 credits
+            // Quarterly ($36) -> 600 credits
+            // Fallback -> 50 credits (safeguard)
+            let grantAmount = 50;
+            if (plan === "monthly") grantAmount = 200;
+            else if (plan === "quarterly") grantAmount = 600;
+
+            nextMonthly = grantAmount;
+
             if (plan !== "unknown") extraUpdates.plan = plan;
             if (subscriptionId) extraUpdates.stripeSubscriptionId = subscriptionId;
             extraUpdates.subscriptionStatus = "active";
@@ -1539,7 +1188,10 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event) {
         }
 
         if (isSubscriptionCheckout) {
-            nextMonthly = 50;
+            // Do NOT set nextMonthly here. rely on invoice.payment_succeeded to grant credits.
+            // verifying logic: if invoice comes first, nextMonthly is already updated in DB.
+            // if checkout comes first, nextMonthly is current (0). invoice will update it later.
+            // nextMonthly = 50; // REMOVED (Conflicted with v1.6 200/600 logic)
             if (subscriptionId) extraUpdates.stripeSubscriptionId = subscriptionId;
             extraUpdates.subscriptionStatus = "active";
         }

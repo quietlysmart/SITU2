@@ -33,9 +33,9 @@ service cloud.firestore {
       && (request.auth.token.email == null || request.resource.data.email == request.auth.token.email)
       && (request.auth.token.email_verified == null || request.resource.data.emailVerified == request.auth.token.email_verified)
       && request.resource.data.plan == 'free'
-      && request.resource.data.bonusCredits == 12
+      && request.resource.data.bonusCredits == 10
       && request.resource.data.monthlyCreditsRemaining == 0
-      && request.resource.data.credits == 12
+      && request.resource.data.credits == 10
       && request.resource.data.isAdmin == false
       && request.resource.data.subscriptionStatus == null
       && request.resource.data.creditsResetAt == null

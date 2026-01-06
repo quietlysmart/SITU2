@@ -4,7 +4,6 @@ import { auth, db } from "../lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
-import { bootstrapUserProfile } from "../lib/profile";
 
 export function Signup() {
     const [name, setName] = useState("");
@@ -15,7 +14,6 @@ export function Signup() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const promo = searchParams.get("promo");
-    const guestSessionId = searchParams.get("guestSession");
 
     const waitForProfile = async (uid: string, timeoutMs = 15000) => {
         const profileRef = doc(db, "users", uid);
@@ -74,34 +72,6 @@ export function Signup() {
             // Update Auth Profile
             await updateProfile(user, { displayName: name });
             ensureProfile(user); // Fire-and-forget to avoid blocking the UI
-            bootstrapUserProfile(user).catch(err => {
-                console.warn("[Signup] Profile bootstrap failed", err);
-            });
-
-            // Claim Guest Session if present
-            if (guestSessionId) {
-                try {
-                    console.log("Claiming guest session:", guestSessionId);
-                    const token = await user.getIdToken(true);
-                    const claimRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/claimGuestSession`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ sessionId: guestSessionId })
-                    });
-
-                    if (!claimRes.ok) {
-                        console.error("Failed to claim guest session", await claimRes.json());
-                        // Non-blocking error, user still gets account
-                    } else {
-                        console.log("Guest session claimed!");
-                    }
-                } catch (err) {
-                    console.error("Error claiming guest session:", err);
-                }
-            }
 
             // Check for Pending Plan (from Pricing page)
             const pendingPlan = localStorage.getItem("situ_pending_plan");
@@ -169,7 +139,7 @@ export function Signup() {
             {/* General banner if no specific promo, or maybe just update the promo text if generic */}
             {!promo && (
                 <div className="bg-brand-sand/30 text-brand-brown p-4 rounded-md mb-6 text-center text-sm font-medium">
-                    Create an account to get 12 free credits
+                    Create an account to get 10 free credits
                 </div>
             )}
             <form onSubmit={handleSignup} className="space-y-4">

@@ -9,7 +9,7 @@ export function Home() {
 
     const handleGetStarted = () => {
         if (!user) {
-            navigate("/guest");
+            navigate("/signup");
         } else {
             navigate("/member/studio");
         }
@@ -40,7 +40,7 @@ export function Home() {
                             See your art in the world<br className="hidden md:block" /> in under a minute.
                         </h1>
                         <p className="text-base sm:text-lg md:text-xl text-white/90 mb-8 max-w-2xl mx-auto leading-relaxed animate-fade-in-delay-1 drop-shadow-md font-medium px-4">
-                            Upload once, get 4 mockups instantly, and email them to yourself to keep.
+                            Create an account, upload once, and generate realistic mockups in under a minute.
                         </p>
                         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-delay-2 w-full px-4">
                             <Button
@@ -74,7 +74,7 @@ export function Home() {
                         <div className="text-center space-y-4">
                             <div className="w-16 h-16 bg-brand-sand text-brand-brown rounded-full flex items-center justify-center mx-auto text-xl font-bold">3</div>
                             <h3 className="text-xl font-semibold text-brand-brown">Download & Share</h3>
-                            <p className="text-brand-brown/70">Download your set or email 4 free guest mockups to yourself, ready for shop or socials.</p>
+                            <p className="text-brand-brown/70">Download your set ready for your shop, portfolio, or socials.</p>
                         </div>
                     </div>
                 </div>
@@ -124,7 +124,7 @@ export function Home() {
                         </div>
                         <div className="space-y-3 text-brand-brown">
                             {[
-                                "Get 4 realistic mockups instantly (guests can email them to themselves)",
+                                "Get realistic mockups instantly",
                                 "No Photoshop or expensive software subscriptions",
                                 "Clean lighting and perspective that looks believable",
                                 "Ready for your shop, portfolio, and socials"
@@ -163,6 +163,9 @@ export function Home() {
                     <div className="text-center max-w-2xl mx-auto mb-16">
                         <h2 className="text-3xl font-bold text-brand-brown mb-4 font-serif">Simple, transparent pricing</h2>
                         <p className="text-lg text-brand-brown/70">Choose the plan that fits your creative workflow.</p>
+                        <div className="mt-6 inline-block bg-brand-sand/50 text-brand-brown px-6 py-2 rounded-full text-sm font-medium">
+                            Create an account to get 10 free credits.
+                        </div>
                     </div>
 
                     <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
@@ -171,12 +174,12 @@ export function Home() {
                             <div className="mb-4">
                                 <h3 className="text-xl font-bold text-brand-brown font-serif">Monthly</h3>
                                 <div className="mt-2 flex items-baseline text-brand-brown">
-                                    <span className="text-4xl font-bold tracking-tight">$12</span>
+                                    <span className="text-4xl font-bold tracking-tight">$15</span>
                                     <span className="ml-1 text-brand-brown/70">/month</span>
                                 </div>
-                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
+                                <p className="text-sm text-brand-brown/70 mt-2">200 mockups per month</p>
                             </div>
-                            <p className="text-brand-brown/70 mb-8">Perfect for occasional projects.</p>
+                            <p className="text-brand-brown/70 mb-8">Perfect for regular projects.</p>
                             <Button
                                 variant="outline"
                                 className="w-full mt-auto"
@@ -186,19 +189,19 @@ export function Home() {
                             </Button>
                         </div>
 
-                        {/* 3 Months */}
+                        {/* Quarterly */}
                         <div className="border border-brand-brown rounded-3xl p-8 flex flex-col relative bg-white shadow-xl shadow-brand-brown/5 transform md:-translate-y-4">
                             <div className="absolute top-0 right-0 -mt-3 -mr-3 bg-brand-brown text-brand-cream text-xs font-bold px-3 py-1 rounded-full">
                                 POPULAR
                             </div>
                             <div className="mb-4">
-                                <h3 className="text-xl font-bold text-brand-brown font-serif">3 Months</h3>
+                                <h3 className="text-xl font-bold text-brand-brown font-serif">Quarterly</h3>
                                 <div className="mt-2 flex items-baseline text-brand-brown">
-                                    <span className="text-4xl font-bold tracking-tight">$10</span>
-                                    <span className="ml-1 text-brand-brown/70">/month</span>
+                                    <span className="text-4xl font-bold tracking-tight">$36</span>
+                                    <span className="ml-1 text-brand-brown/70">/3 months</span>
                                 </div>
-                                <p className="text-sm text-brand-brown/60 mt-1">Billed $30 every 3 months</p>
-                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
+                                <p className="text-sm text-brand-brown/60 mt-1">Equivalent to $12/month</p>
+                                <p className="text-sm text-brand-brown/70 mt-2">600 mockups per quarter</p>
                             </div>
                             <p className="text-brand-brown/80 mb-8">Great for active artists.</p>
                             <Button
@@ -209,28 +212,28 @@ export function Home() {
                             </Button>
                         </div>
 
-                        {/* 6 Months */}
+                        {/* Top Up */}
                         <div className="border border-brand-brown/10 rounded-3xl p-8 flex flex-col bg-white/50 backdrop-blur-sm">
                             <div className="mb-4">
-                                <h3 className="text-xl font-bold text-brand-brown font-serif">6 Months</h3>
+                                <h3 className="text-xl font-bold text-brand-brown font-serif">Top Up</h3>
                                 <div className="mt-2 flex items-baseline text-brand-brown">
-                                    <span className="text-4xl font-bold tracking-tight">$7</span>
-                                    <span className="ml-1 text-brand-brown/70">/month</span>
+                                    <span className="text-4xl font-bold tracking-tight">$5</span>
+                                    <span className="ml-1 text-brand-brown/70">/pack</span>
                                 </div>
-                                <p className="text-sm text-brand-brown/60 mt-1">Billed $42 every 6 months</p>
-                                <p className="text-sm text-brand-brown/70 mt-2">50 mockups per month</p>
+                                <p className="text-sm text-brand-brown/60 mt-1">One-time purchase</p>
+                                <p className="text-sm text-brand-brown/70 mt-2">50 extra mockups</p>
                             </div>
-                            <p className="text-brand-brown/70 mb-8">Best value for long-term use.</p>
+                            <p className="text-brand-brown/70 mb-8">Add credits anytime.</p>
                             <Button
                                 variant="outline"
                                 className="w-full mt-auto"
                                 onClick={() => handleGetStarted()}
                             >
-                                Start Biannual
+                                Buy Pack
                             </Button>
                         </div>
                     </div>
-                    <p className="text-center text-sm text-brand-brown/70 mt-6">Credits reset monthly. Top up anytime.</p>
+                    <p className="text-center text-sm text-brand-brown/70 mt-6">Credits provided per billing period. Top up anytime.</p>
                 </div>
             </section>
 
@@ -240,9 +243,9 @@ export function Home() {
                     <h2 className="text-3xl font-bold text-brand-brown mb-10 font-serif text-center">FAQ</h2>
                     <div className="grid md:grid-cols-2 gap-8">
                         {[
-                            { q: "How do credits work?", a: "Each plan includes 50 mockups per month. Creating a mockup uses 1 credit." },
-                            { q: "Can I try it before subscribing?", a: "Yes. Guests can generate 4 mockups and email them to themselves for free." },
-                            { q: "Do unused credits roll over?", a: "No. Credits reset each month so you start fresh with 50." },
+                            { q: "How do credits work?", a: "Plans include 200 (Monthly) or 600 (Quarterly) mockups. Creating a mockup uses 1 credit." },
+                            { q: "Can I try it before subscribing?", a: "Yes. New accounts start with 10 free credits to try it out." },
+                            { q: "Do unused credits roll over?", a: "No. Credits are refreshed at the start of each billing period." },
                             { q: "Can I buy extra credits?", a: "Yes. You can top up with an extra pack of credits anytime." },
                             { q: "Does Situ change my artwork?", a: "No. Situ keeps your art as-is and places it into realistic scenes." },
                             { q: "What files work best?", a: "High-resolution PNG or JPG files work best. The higher the quality, the better the mockups look." },
@@ -263,7 +266,7 @@ export function Home() {
                 <div className="container mx-auto px-4 text-center">
                     <h2 className="text-3xl md:text-5xl font-bold mb-8 font-serif">Ready to see your art in the world?</h2>
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                        <Link to="/guest">
+                        <Link to="/signup">
                             <Button size="lg" className="bg-brand-cream text-brand-brown hover:bg-brand-cream/90 px-10 text-lg">
                                 Start with your artwork
                             </Button>

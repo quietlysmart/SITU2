@@ -6,7 +6,6 @@ import { collection, addDoc, query, onSnapshot, doc, orderBy, serverTimestamp } 
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router-dom";
-import { bootstrapUserProfile } from "../lib/profile";
 import type { Artwork, Mockup } from "../types";
 
 export function MemberStudio() {
@@ -18,11 +17,15 @@ export function MemberStudio() {
     const [selectedArtwork, setSelectedArtwork] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
     const [generating, setGenerating] = useState(false);
+    const [pendingGeneration, setPendingGeneration] = useState(false);
     const [topUpLoading, setTopUpLoading] = useState(false);
     const [mockups, setMockups] = useState<any[]>([]);
     const [credits, setCredits] = useState(0);
     const [loading, setLoading] = useState(true);
     const [profileError, setProfileError] = useState<string | null>(null);
+    const pendingGenerationRef = useRef(false);
+    const pendingStartCountRef = useRef(0);
+    const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Generation Options
     const [selectedProduct, setSelectedProduct] = useState<string>("wall");
@@ -110,6 +113,30 @@ export function MemberStudio() {
         }
     }, [user]);
 
+    const clearPendingGeneration = useCallback(() => {
+        if (pendingTimeoutRef.current) {
+            clearTimeout(pendingTimeoutRef.current);
+            pendingTimeoutRef.current = null;
+        }
+        pendingGenerationRef.current = false;
+        setPendingGeneration(false);
+        setGenerating(false);
+    }, []);
+
+    const startPendingGeneration = useCallback((startCount: number, reason: string) => {
+        if (pendingTimeoutRef.current) {
+            clearTimeout(pendingTimeoutRef.current);
+        }
+        pendingGenerationRef.current = true;
+        pendingStartCountRef.current = startCount;
+        setPendingGeneration(true);
+        console.warn(`[MemberStudio] Generation pending (${reason}). Waiting for new mockups...`);
+        pendingTimeoutRef.current = setTimeout(() => {
+            console.warn("[MemberStudio] Generation pending timeout. Re-enabling controls.");
+            clearPendingGeneration();
+        }, 120000);
+    }, [clearPendingGeneration]);
+
     const retryEnsureProfile = async () => {
         ensureAttemptedRef.current = false;
         setProfileError(null);
@@ -153,9 +180,13 @@ export function MemberStudio() {
                     profileTimeout = null;
                 }
 
-                // Show low credits popup for free users when credits <= 4
-                if (plan === "free" && currentCredits <= 4 && currentCredits > 0) {
+                // Show low credits popup for free users when credits <= 2
+                const hasSeenLowCredits = localStorage.getItem("situ_low_credits_dismissed");
+                if (plan === "free" && currentCredits <= 2 && currentCredits > 0 && !hasSeenLowCredits) {
                     setShowLowCreditsPopup(true);
+                } else if (currentCredits > 2) {
+                    // Reset the seen flag if they top up or have enough credits, so it can show again later
+                    localStorage.removeItem("situ_low_credits_dismissed");
                 }
             } else {
                 if (!missingLogged) {
@@ -164,12 +195,7 @@ export function MemberStudio() {
                 }
                 setProfileStatus("ensuring");
                 ensureProfile();
-                if (!bootstrapAttemptedRef.current && user) {
-                    bootstrapAttemptedRef.current = true;
-                    bootstrapUserProfile(user).catch(err => {
-                        console.warn("[MemberStudio] Profile bootstrap failed", err);
-                    });
-                }
+                // Client-side bootstrap removed (v1.6) - rely on ensureProfile
                 if (!profileTimeout) {
                     profileTimeout = setTimeout(() => {
                         // Use functional update to check if we already have a specific error
@@ -242,6 +268,9 @@ export function MemberStudio() {
             const uniqueResults = Array.from(new Map(results.map(item => [item.id, item])).values());
             console.log(`[MemberStudio] Setting ${uniqueResults.length} mockups to state`);
             setMockups(uniqueResults);
+            if (pendingGenerationRef.current && uniqueResults.length > pendingStartCountRef.current) {
+                clearPendingGeneration();
+            }
         }, (error) => {
             console.error("[MemberStudio] Failed to load mockups.", error);
         });
@@ -250,7 +279,7 @@ export function MemberStudio() {
             console.log("[MemberStudio] Cleaning up mockups subscription");
             unsubMockups();
         };
-    }, [user, authLoading]);
+    }, [user, authLoading, clearPendingGeneration]);
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || !e.target.files[0] || !user) return;
@@ -314,29 +343,43 @@ export function MemberStudio() {
                 ? "/api/generateMemberMockups"
                 : `${import.meta.env.VITE_API_BASE_URL}/generateMemberMockups`;
 
-            const response = await fetch(apiUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`,
-                },
-                body: JSON.stringify({
-                    artworkId: selectedArtwork,
-                    artworkUrl, // Pass URL directly to bypass backend DB lookup if needed
-                    product: selectedProduct,
-                    aspectRatio,
-                    numVariations,
-                    customPrompt,
-                }),
-            });
+            const fetchWithRetry = async (attempts = 2): Promise<Response> => {
+                let lastError: any = null;
+                for (let i = 0; i < attempts; i++) {
+                    try {
+                        return await fetch(apiUrl, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Authorization": `Bearer ${token}`,
+                            },
+                            body: JSON.stringify({
+                                artworkId: selectedArtwork,
+                                artworkUrl, // Pass URL directly to bypass backend DB lookup if needed
+                                product: selectedProduct,
+                                aspectRatio,
+                                numVariations,
+                                customPrompt,
+                            }),
+                        });
+                    } catch (err: any) {
+                        lastError = err;
+                        if (i < attempts - 1) {
+                            await new Promise(res => setTimeout(res, 1000));
+                        }
+                    }
+                }
+                throw lastError;
+            };
+
+            const response = await fetchWithRetry();
 
             console.log("[MemberStudio] Response status:", response.status);
 
             // 1. Broadly handle server/hosting errors (500, 502, 504, etc.)
             if (response.status >= 500) {
                 console.warn(`[MemberStudio] Server/Gateway error (${response.status}). Checking for background success via real-time listeners...`);
-                // Give it a moment for the background process to finish/register in Firestore
-                setTimeout(() => setGenerating(false), 3000);
+                startPendingGeneration(mockups.length, `server_${response.status}`);
                 return;
             }
 
@@ -360,13 +403,17 @@ export function MemberStudio() {
             // 4. Handle 200 responses that might not be valid JSON (rare but possible with Hosting)
             if (!data) {
                 console.warn("[MemberStudio] Success status but invalid/empty data. Continuing via listeners.");
-                setTimeout(() => setGenerating(false), 2000);
+                startPendingGeneration(mockups.length, "empty_response");
                 return;
             }
             console.log("[MemberStudio] Response data:", JSON.stringify(data, null, 2));
 
             if (data.ok) {
                 console.log("[MemberStudio] Generation successful, results:", data.results?.length || 0);
+                if (data.accepted || response.status === 202) {
+                    startPendingGeneration(mockups.length, "accepted");
+                    return;
+                }
                 if (data.errors && data.errors.length > 0) {
                     const errorMessages = data.errors.map((e: any) => `${e.category}: ${e.message}`).join("\n");
                     alert(`Generated ${data.results.length} images, but some failed:\n${errorMessages}`);
@@ -376,9 +423,16 @@ export function MemberStudio() {
             }
         } catch (error: any) {
             console.error("Generate error:", error);
-            alert(`Generation failed: ${error.message}`);
+            if (error?.message === "Failed to fetch") {
+                startPendingGeneration(mockups.length, "network_error");
+                alert("Network error. Generation may still be processing in the background. Please wait a minute and check your gallery.");
+            } else {
+                alert(`Generation failed: ${error.message}`);
+            }
         } finally {
-            setGenerating(false);
+            if (!pendingGenerationRef.current) {
+                setGenerating(false);
+            }
         }
     };
 
@@ -467,24 +521,22 @@ export function MemberStudio() {
                             </div>
                             <h2 className="text-xl font-bold text-brand-brown mb-2">Credits Running Low</h2>
                             <p className="text-brand-brown/70 mb-6">
-                                You have <span className="font-bold text-amber-600">{credits}</span> credits remaining.
-                                Want 12 more free credits? Fill out our quick feedback form!
+                                Enjoying Situ? You’re getting low on credits. If you’d like to make more mockups, please consider subscribing.
                             </p>
                             <div className="space-y-3">
-                                <a
-                                    href="https://docs.google.com/forms/d/e/1FAIpQLSc3UMMIEpwxO05bsf_LFfHyTCz9pAO-tGV_BbNmOWaE79_bAg/viewform?usp=publish-editor"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="block"
+                                <Button
+                                    className="w-full"
+                                    onClick={() => navigate("/pricing")}
                                 >
-                                    <Button className="w-full">
-                                        Get 12 Free Credits
-                                    </Button>
-                                </a>
+                                    View Plans
+                                </Button>
                                 <Button
                                     variant="ghost"
                                     className="w-full text-brand-brown/50"
-                                    onClick={() => setShowLowCreditsPopup(false)}
+                                    onClick={() => {
+                                        localStorage.setItem("situ_low_credits_dismissed", "true");
+                                        setShowLowCreditsPopup(false);
+                                    }}
                                 >
                                     Maybe Later
                                 </Button>
@@ -719,6 +771,11 @@ export function MemberStudio() {
                             `Create (${numVariations} credit${numVariations > 1 ? 's' : ''})`
                         )}
                     </Button>
+                    {pendingGeneration && (
+                        <p className="text-xs text-brand-brown/60 text-center mt-2">
+                            Still processing. New mockups will appear automatically.
+                        </p>
+                    )}
 
                     <Button
                         onClick={handleTopUp}

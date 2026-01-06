@@ -14,8 +14,8 @@ export function Footer() {
                     <div className="flex flex-col md:flex-row gap-8 md:gap-12 text-sm text-slate-600">
                         <div className="flex flex-col gap-2">
                             <span className="font-semibold text-slate-900">Product</span>
-                            <Link to="/studio" className="hover:text-slate-900">Guest Studio</Link>
-                            <Link to="/pricing" className="hover:text-slate-900">Pricing</Link>
+                            <Link to="/pricing" className="text-brand-brown/60 hover:text-brand-brown transition-colors">Pricing</Link>
+                            <Link to="/login" className="text-brand-brown/60 hover:text-brand-brown transition-colors">Log in</Link>
                             <a
                                 href={`mailto:hello@floobcreative.com?subject=${encodeURIComponent("Situ support")}&body=${encodeURIComponent("Please share details about your issue. Include your email and UID if known. RequestId: ")}`}
                                 className="hover:text-slate-900"

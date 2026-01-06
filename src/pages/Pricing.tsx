@@ -68,7 +68,7 @@ export function Pricing() {
                     <h1 className="text-4xl md:text-5xl font-bold text-brand-brown mb-6 font-serif">Simple, transparent pricing</h1>
                     <p className="text-xl text-brand-brown/70">Choose the plan that fits your creative workflow.</p>
                     <div className="mt-8 inline-block bg-brand-sand text-brand-brown px-6 py-2 rounded-full text-sm font-medium">
-                        Early testing: 12 images free for new members
+                        Early testing: 10 images free for new members
                     </div>
                     {error && (
                         <div className="mt-4 text-red-500 font-medium bg-red-50 p-2 rounded max-w-md mx-auto">
@@ -83,12 +83,12 @@ export function Pricing() {
                         <div className="mb-4">
                             <h3 className="text-xl font-bold text-brand-brown font-serif">Monthly</h3>
                             <div className="mt-2 flex items-baseline text-brand-brown">
-                                <span className="text-4xl font-bold tracking-tight">$12</span>
+                                <span className="text-4xl font-bold tracking-tight">$15</span>
                                 <span className="ml-1 text-brand-brown/70">/month</span>
                             </div>
                         </div>
-                        <p className="text-brand-brown/70 mb-4">Perfect for occasional projects.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
+                        <p className="text-brand-brown/70 mb-4">Perfect for regular projects.</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">200 mockups per month</p>
                         <Button
                             variant="outline"
                             className="w-full mt-auto"
@@ -105,15 +105,15 @@ export function Pricing() {
                             POPULAR
                         </div>
                         <div className="mb-4">
-                            <h3 className="text-xl font-bold text-brand-brown font-serif">3 Months</h3>
+                            <h3 className="text-xl font-bold text-brand-brown font-serif">Quarterly</h3>
                             <div className="mt-2 flex items-baseline text-brand-brown">
-                                <span className="text-4xl font-bold tracking-tight">$10</span>
-                                <span className="ml-1 text-brand-brown/70">/month</span>
+                                <span className="text-4xl font-bold tracking-tight">$36</span>
+                                <span className="ml-1 text-brand-brown/70">/3 months</span>
                             </div>
-                            <p className="text-sm text-brand-brown/60 mt-1">Billed $30 every 3 months</p>
+                            <p className="text-sm text-brand-brown/60 mt-1">Equivalent to $12/month</p>
                         </div>
-                        <p className="text-brand-brown/80 mb-4">Great for active artists.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
+                        <p className="text-brand-brown/80 mb-4">Great value for active artists.</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">600 mockups per quarter</p>
                         <Button
                             className="w-full mt-auto"
                             onClick={() => handleSubscribe("quarterly")}
@@ -123,25 +123,25 @@ export function Pricing() {
                         </Button>
                     </div>
 
-                    {/* 6 Months */}
+                    {/* Top Up */}
                     <div className="border border-brand-brown/10 rounded-3xl p-8 flex flex-col bg-white/50 backdrop-blur-sm">
                         <div className="mb-4">
-                            <h3 className="text-xl font-bold text-brand-brown font-serif">6 Months</h3>
+                            <h3 className="text-xl font-bold text-brand-brown font-serif">Top Up</h3>
                             <div className="mt-2 flex items-baseline text-brand-brown">
-                                <span className="text-4xl font-bold tracking-tight">$7</span>
-                                <span className="ml-1 text-brand-brown/70">/month</span>
+                                <span className="text-4xl font-bold tracking-tight">$5</span>
+                                <span className="ml-1 text-brand-brown/70">/pack</span>
                             </div>
-                            <p className="text-sm text-brand-brown/60 mt-1">Billed $42 every 6 months</p>
+                            <p className="text-sm text-brand-brown/60 mt-1">One-time purchase</p>
                         </div>
-                        <p className="text-brand-brown/70 mb-4">Best value for long-term use.</p>
-                        <p className="text-sm font-semibold text-brand-brown mb-8">50 mockups per month</p>
+                        <p className="text-brand-brown/70 mb-4">Add credits anytime.</p>
+                        <p className="text-sm font-semibold text-brand-brown mb-8">50 extra mockups</p>
                         <Button
                             variant="outline"
                             className="w-full mt-auto"
-                            onClick={() => handleSubscribe("sixMonths")}
+                            onClick={() => handleSubscribe("topup" as any)} // Cast safely as we know backend handles it, or update type
                             disabled={loading !== null}
                         >
-                            {loading === "sixMonths" ? "Redirecting to Stripe..." : "Start Biannual"}
+                            {loading === "topup" ? "Redirecting to Stripe..." : "Buy Pack"}
                         </Button>
                     </div>
                 </div>

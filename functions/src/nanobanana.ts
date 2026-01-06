@@ -228,7 +228,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             "3:4": "Standard portrait 3:4 aspect ratio.",
         };
 
-        const normalizedAspectRatio = aspectRatio && aspectRatio !== "1:1" ? aspectRatio : null;
+        const normalizedAspectRatio = aspectRatio && ratioPromptMap[aspectRatio] ? aspectRatio : null;
         const ratioPrompt = normalizedAspectRatio ? (ratioPromptMap[normalizedAspectRatio] || "") : "";
         const basePrompt = PRODUCT_PROMPTS[category] || `Professional product photography of a ${category} featuring the provided artwork.`;
         const userPrompt = customPrompt ? `USER REQUEST: ${customPrompt}` : "";
@@ -263,7 +263,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
         const mimeType = imageResp.headers.get("content-type") || "image/jpeg";
         const artworkPart = { inline_data: { mime_type: mimeType, data: imageBase64 } };
 
-        const ratioMap: Record<string, number> = { "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4 };
+        const ratioMap: Record<string, number> = { "1:1": 1, "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4 };
         const targetRatio = normalizedAspectRatio ? ratioMap[normalizedAspectRatio] : null;
         const useAspectRatio = !!targetRatio;
         const seed = useAspectRatio && normalizedAspectRatio ? generateBlankPNG(normalizedAspectRatio) : null;
@@ -364,7 +364,9 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             return result.dataUrl;
         }
 
-        const modelCandidates = Array.from(new Set([AR_MODEL_ID, FALLBACK_MODEL_ID]));
+        const modelCandidates = normalizedAspectRatio === "1:1"
+            ? Array.from(new Set([FALLBACK_MODEL_ID]))
+            : Array.from(new Set([AR_MODEL_ID, FALLBACK_MODEL_ID]));
         const seedInlinePart = seedPart;
         let lastResult: ImageResult | null = null;
         let lastError: Error | null = null;
