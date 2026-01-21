@@ -9,10 +9,10 @@ dotenv.config();
 import { resolveProjectId } from "./admin";
 import sharp from "sharp";
 
-const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY;
-const MODEL_ID = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
-const FALLBACK_MODEL_ID = process.env.NANOBANANA_FREE_MODEL_ID || MODEL_ID;
-const AR_MODEL_ID = process.env.NANOBANANA_PRO_MODEL_ID || FALLBACK_MODEL_ID;
+const GENAI_API_KEY = process.env.GOOGLE_GENAI_API_KEY?.trim();
+const MODEL_ID = process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-1.5-flash-001";
+const FALLBACK_MODEL_ID = process.env.NANOBANANA_FREE_MODEL_ID?.trim() || MODEL_ID;
+const AR_MODEL_ID = process.env.NANOBANANA_PRO_MODEL_ID?.trim() || FALLBACK_MODEL_ID;
 
 if (!GENAI_API_KEY) {
     console.warn("GOOGLE_GENAI_API_KEY is not set");
@@ -276,10 +276,38 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             throw new Error("Aspect ratio seed generation failed");
         }
 
-        const makeRequest = async (prefix: string, bodyJson: any, modelToUse: string): Promise<Response> => {
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${modelToUse}:generateContent?key=${GENAI_API_KEY}`;
+        // DIAGNOSTIC CORE: List available models to debug 404s
+        const logAvailableModels = async () => {
+            try {
+                const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${GENAI_API_KEY}`;
+                const listResp = await fetch(listUrl);
+                if (listResp.ok) {
+                    const listData = await listResp.json();
+                    const modelNames = listData.models?.map((m: any) => m.name) || [];
+                    console.log("[NANOBANANA] AVAILABLE MODELS:", modelNames.join(", "));
+                } else {
+                    console.warn("[NANOBANANA] Failed to list models:", listResp.status);
+                }
+            } catch (e) {
+                console.warn("[NANOBANANA] List models failed:", e);
+            }
+        };
+        // Await to ensure we see the log before the function potentially succeeds/fails and terminates
+        await logAvailableModels();
 
-            console.log(`[NANOBANANA] Requesting ${prefix}/${modelToUse}:generateContent`);
+        const makeRequest = async (prefix: string, bodyJson: any, modelToUse: string): Promise<Response> => {
+            if (!modelToUse || !modelToUse.trim()) {
+                throw new Error(`Gemini API Error: Invalid model ID (empty or whitespace). Attempted to use: "${modelToUse}"`);
+            }
+            // Sanitize: Remove 'models/' or 'tunedModels/' prefix if present in the ID itself
+            // to prevent "models/models/..."
+            const cleanModelId = modelToUse.trim().replace(/^(models\/|tunedModels\/)/, "");
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/${prefix}/${cleanModelId}:generateContent?key=${GENAI_API_KEY}`;
+
+            console.log(`[NANOBANANA] Requesting ${prefix}/${cleanModelId}:generateContent`);
+            // Security: Don't log the full body/API key, but log the structure
+            console.log(`[NANOBANANA] Model: "${cleanModelId}" (Original: "${modelToUse}")`);
 
             const resp = await fetch(apiUrl, {
                 method: "POST",
@@ -304,7 +332,7 @@ export async function generateCategoryMockup(category: string, artworkUrl: strin
             const body = { contents: [{ parts }] };
             let lastEndpoint = `models/${modelToUse}:generateContent`;
             let response = await makeRequest("models", body, modelToUse);
-            if (response.status === 404) {
+            if (response.status === 404 && modelToUse.startsWith("tunedModels/")) {
                 console.log(`[NANOBANANA] 'models/' endpoint returned 404. Retrying with 'tunedModels/' (${label})...`);
                 lastEndpoint = `tunedModels/${modelToUse}:generateContent`;
                 response = await makeRequest("tunedModels", body, modelToUse);

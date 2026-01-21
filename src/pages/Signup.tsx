@@ -74,37 +74,38 @@ export function Signup() {
             ensureProfile(user); // Fire-and-forget to avoid blocking the UI
 
             // Check for Pending Plan (from Pricing page)
-            const pendingPlan = localStorage.getItem("situ_pending_plan");
-            if (pendingPlan) {
-                console.log("Found pending plan:", pendingPlan);
-                // Clear it so it doesn't trigger again
-                localStorage.removeItem("situ_pending_plan");
-
-                // Start Checkout Flow
-                try {
-                    const token = await user.getIdToken();
-                    const checkoutRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${token}`,
-                        },
-                        body: JSON.stringify({ plan: pendingPlan }),
-                    });
-
-                    const checkoutData = await checkoutRes.json();
-                    if (checkoutData.ok && checkoutData.url) {
-                        console.log("Redirecting to Stripe for pending plan...");
-                        window.location.href = checkoutData.url;
-                        return; // Stop here, don't navigate to Member Studio
-                    } else {
-                        console.error("Failed to start pending plan checkout:", checkoutData);
-                        // Fallback to Member Studio if Stripe fails
-                    }
-                } catch (checkoutErr) {
-                    console.error("Error starting pending plan checkout:", checkoutErr);
-                }
-            }
+            // DISABLED (v1.6): Users should always go to Member Studio first to use free credits.
+            // const pendingPlan = localStorage.getItem("situ_pending_plan");
+            // if (pendingPlan) {
+            //     console.log("Found pending plan:", pendingPlan);
+            //     // Clear it so it doesn't trigger again
+            //     localStorage.removeItem("situ_pending_plan");
+            //
+            //     // Start Checkout Flow
+            //     try {
+            //         const token = await user.getIdToken();
+            //         const checkoutRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/createCheckoutSession`, {
+            //             method: "POST",
+            //             headers: {
+            //                 "Content-Type": "application/json",
+            //                 "Authorization": `Bearer ${token}`,
+            //             },
+            //             body: JSON.stringify({ plan: pendingPlan }),
+            //         });
+            //
+            //         const checkoutData = await checkoutRes.json();
+            //         if (checkoutData.ok && checkoutData.url) {
+            //             console.log("Redirecting to Stripe for pending plan...");
+            //             window.location.href = checkoutData.url;
+            //             return; // Stop here, don't navigate to Member Studio
+            //         } else {
+            //             console.error("Failed to start pending plan checkout:", checkoutData);
+            //             // Fallback to Member Studio if Stripe fails
+            //         }
+            //     } catch (checkoutErr) {
+            //         console.error("Error starting pending plan checkout:", checkoutErr);
+            //     }
+            // }
 
             try {
                 await waitForProfile(user.uid);

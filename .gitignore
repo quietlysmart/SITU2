@@ -34,3 +34,6 @@ functions/.env
 firebase-deploy-debug.txt
 firebase-debug.log
 firebase-debug.*.log
+
+# Marketing automation (separate from main app)
+marketing-automation/
